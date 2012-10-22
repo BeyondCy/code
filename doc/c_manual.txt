@@ -1,0 +1,426 @@
+文档名称：C程序员装逼指南(C Coder Zhuangbility Manual)
+文档维护：Xuefeng Chang(welfear@gmail.com)
+文档日期：2010.11.15
+
+
+
+00 zhuangbility:
+
+
+这可能是我写的最不靠谱的文档了。本文档源于光棍节前的一次玩笑，随后明白，
+这东西根本没法写。一来，正如回字有几样写法一样迂腐，语言语法级别的东西
+不是那么上档次；二来，它们确实在实际开发中没有什么用。但语言中确实有一些
+好的技巧应该被整理收集。比如：
+
+char f[] = "char f[] =%c%c%s%c;%cmain() {printf(f,10,34,f,34,10,10);}%c";
+main() {printf(f,10,34,f,34,10,10);}
+
+上面的程序可以输出自己的源代码。这是老牌黑客喜欢玩的quine游戏。下面这个
+网站收集了很多，我随手抄来：
+
+http://www.nyx.net/~gthompso/
+
+即使我保留了装逼指南的名字，而实际内容却可能是一些杂项和随想。
+
+
+01 char:
+
+
+严格的说unsigned char、signed char和char是三个类型。char是有无符号由实现
+决定。在limits.h中记录char的最大值和最小值，一般是有符号的。因此对于参与
+计算时，将char定义为byte时，最好显式使用unsigned char：
+
+typedef unsigned char byte;
+
+VC提供了/J编译选项，使char从有符号变成无符号。下面是使用不当char的错误：
+
+#define MAKE_DWORD(x) \
+(DWORD)((x)[0] + ((x)[1] << 8) + ((x)[2] << 16) + ((x)[3] << 24))
+
+当x是一个PCHAR，它指向了0x000fccd0。但经过MAKE_DWORD后的结果是0x000ecbd0。
+因为0xd0和0xcc被当成负数，参与计算时，高位被扩展成1。在进行右移操作时，
+如果操作数为负，那么右移后最高位还是1。
+
+sizeof(char)被定义为1。4byte至少是8位，它需要容下127个ASCII码，并保证它们
+是非负的。limits.h中定义了当前处理器平台上byte的位数。而char最少需要容下
+基本字符集(C定义)。在C标准之前的1960年，8bit System/360最终使用ASCII码作为
+基本编码。1960年之前byte的大小不统一，8, 9, 16, 32, or 36 bits都存在过。
+1970年之后便统一为8。避免如下写法：
+
+sizeof 'a' /* C中值为4，C++中值为1。 */
+
+对于局部字符数组，编译器会在全局数据区保存字符"string"，在初始化array时，
+有一个隐式的复制过程，这会带来意想不到的性能损失。
+
+void foo(void)
+{
+    char array[ ] = "string";
+}
+
+
+02 []:
+
+
+根据C标准，E1[E2]的含义是(*((E1)+(E2)))。因此，只要E1和E2中有一个为指针
+即可，而没有指定E1或E2：
+
+char array[4];
+array[0] = 'a'
+1[array] = 'a';
+(2*1)[array] = 'a';
+
+以上都是合法的。
+
+
+03 do-while:
+
+
+do while(0)至少有两种用法：一、代替goto；二、消除宏歧义。下面看例子：
+
+do {
+    p = malloc(0);
+    if (!p)
+        break;
+    .......
+} while (0);
+
+free(p);
+
+如果代码风格规定确实不能使用goto，那么这里的break可以起到跳转的作用。
+
+#define stat_macro(i) do { i = 0; i++; }while(0)
+
+if (con)
+    stat_macro(i);
+else
+    i++;
+
+do-while(0)巧妙的解决了{}之后的;，并在没有{}的if, else的语句中保持原意。
+
+
+04 fastcall:
+
+
+Borland C++ 5.x fastcall
+字符、整型、指针类型的参数在传递时依次是EAX、EDX、ECX。
+而远指针和浮点类型依然是通过堆栈传递的。
+
+VC++ 4.x-6.x fastcall
+字符、整型、指针类型的参数在传递时依次使用ECX、EDX而没有使用第三个寄存器。
+而__int64、浮点、远指针是通过堆栈传递的。
+
+在gcc 3.4.6中引入了fastcall:
+`fastcall'
+On the Intel 386, the `fastcall' attribute causes the compiler to
+pass the first argument (if of integral type) in the register ECX
+and the second argument (if of integral type) in the register EDX.
+Subsequent and other typed arguments are passed on the stack.
+The called function will pop the arguments off the stack. If the
+number of arguments is variable all arguments are pushed on the
+stack.
+这和VC++的fastcall调用方式是兼容的。而__attribute__((regparm(3)))和bcb中
+的fastcall兼容。注意：gcc中的fastcall关键字和__attribute__((regparm(3)))
+是不相同的。
+
+
+05 function:
+
+
+参数个数可变的函数必须标记为 __cdecl。显式标记为 __cdecl、__fastcall或
+__stdcall 的函数使用指定的调用约定。采用的参数个数可变的函数总是使用
+__cdecl 调用约定。对于 C，__cdecl 命名约定使用前面带下划线 (_) 的
+函数名；除非声明为 extern "C"，否则 C++ 函数将使用不同的名称修饰方案。
+__fastcall 函数的一些参数传入寄存器（对于 x86 处理器，为 ECX 和 EDX），
+而其余的参数按从右向左的顺序入栈。被调用函数在返回之前从堆栈中弹出参数。
+esp指向栈顶，栈顶地址值却是比较小的值。每次push的结果都使esp减小，
+而pop则相反。cdecl调用按声明顺序由右向左压栈，调用函数清栈。函数名前加"_"。
+stdcall调用按声明顺序由右向左压栈，被调用函数清栈。函数名前加"_"，后加"@"
+和参数个数。下面是在main中调用两种函数的汇编例子：
+
+main()
+{
+  push        ebp
+  mov         ebp,esp
+  sub         esp,44h
+  push        ebx
+  push        esi
+  push        edi
+  lea         edi,[ebp-44h]
+  mov         ecx,11h
+  mov         eax,0CCCCCCCCh
+  rep stos    dword ptr [edi]
+ int c;
+ c = CdeclCall(1, 2);
+  push        2
+  push        1
+  call        @ILT+0(_CdeclCall) (00401005)
+  add         esp,8
+  mov         dword ptr [ebp-4],eax
+ c = StdCall(1, 2);
+  push        2
+  push        1
+  call        @ILT+5(_StdCall@8) (0040100a)
+  mov         dword ptr [ebp-4],eax
+}
+  pop         edi
+  pop         esi
+  pop         ebx
+  add         esp,44h
+  cmp         ebp,esp
+  call        __chkesp (004010f0)
+  mov         esp,ebp
+  pop         ebp
+  ret
+
+CdeclCall比StdCall多了清栈指令add esp,8。
+
+cdeclCall函数内部：                   |stdcall函数内部：
+                                      |
+int __cdecl CdeclCall(int a, int b)   |int __stdcall StdCall(int a, int b)
+{                                     |{
+   push        ebp                    |   push        ebp
+   mov         ebp,esp                |   mov         ebp,esp
+   sub         esp,40h                |   sub         esp,40h
+   push        ebx                    |   push        ebx
+   push        esi                    |   push        esi
+   push        edi                    |   push        edi
+   lea         edi,[ebp-40h]          |   lea         edi,[ebp-40h]
+   mov         ecx,10h                |   mov         ecx,10h
+   mov         eax,0CCCCCCCCh         |   mov         eax,0CCCCCCCCh
+   rep stos    dword ptr [edi]        |   rep stos    dword ptr [edi]
+  return a + b;                       |  return a + b;
+   mov         eax,dword ptr [ebp+8]  |   mov         eax,dword ptr [ebp+8]
+   add         eax,dword ptr [ebp+0Ch]|   add         eax,dword ptr [ebp+0Ch]
+}                                     |}
+   pop         edi                    |   pop         edi
+   pop         esi                    |   pop         esi
+   pop         ebx                    |   pop         ebx
+   mov         esp,ebp                |   mov         esp,ebp
+   pop         ebp                    |   pop         ebp
+   ret                                |   ret         8
+
+其中开头指令都是：
+push ebp
+mov ebp,esp
+sub esp,Xxx
+
+其后的三个保存寄存器的指令是规定：
+push        ebx
+push        esi
+push        edi
+
+最后它们会被释放
+pop         edi
+pop         esi
+pop         ebx
+
+函数返回时会根据调用方式使用ret n 或者 ret。
+在给函数下断点时esp以上是该函数参数，以下是该函数局部变量。
+
+
+06 wchar_t:
+
+
+wchar_t在C++中是内置的关键字，但在C中不是。C是通过typedef定义的。
+VC的/Zc:wchar_t和gcc的-fshort-wchar选项都可以控制wchar_t的宽度。
+在Windows平台上sizeof(wchar_t)为2，而Linux平台上为4。-fshort-wchar
+选项可以使wchar_t变成unsigned short int。
+
+
+07 macro:
+
+
+预处理可以计算uintmax_t大小的常量。C标准定义：
+
+typedef long long intmax_t;
+typedef unsigned long long uintmax_t;
+
+利用预处理器这个特点可以处理更大的数值计算：
+
+#define test_macro (1<<63)
+#if test_macro == 0
+#error "error!"
+#endif
+
+unsigned long long test = test_macro;
+
+在C程序中，常量的大小被限制在unsigned long之内，对于long long大小常量可以
+通过预处理器计算。上面的error!并没有输出，因为test_macro没有溢出。
+
+
+08 __VA_ARGS__:
+
+
+变参宏使得你可以定义类似的宏：
+#define LOG( format, ... ) printf( format, __VA_ARGS__ )
+LOG( "%s %d", str, count );
+__VA_ARGS__是系统预定义宏，被自动替换为参数列表。
+这个特性在GCC和VC中都是支持的。然而Gcc还一种独有的语法扩展：
+
+#define LOG(fmt...) printf(fmt)
+
+即使没有标准的支持，Gcc依然可以支持变参数宏。
+
+
+09 gcc:
+
+
+void * 类型在gcc可以当作整数计算，VC不可以。这导致sizeof(void)值为1，而VC
+中，它的值为零，并打印一条警告。
+
+__func__为C99定义。Gcc支持__func__和__FUNCTION__，然而VC只支持不标准
+的__FUNCTION__。__func__是字符串数组，而__FUNCTION__是宏，可以连接字符：
+
+__FUNCTIN__"string";
+
+({i1 < i2 ? i1 : i2;});
+
+Gcc可以有，VC真没有。这是Gcc扩展语法，{}内的表达式值可以作为整个({})的值。
+这就可以使宏的行为和函数更相近，并同样起到和do-while(0)相同的消除歧义作用。
+
+strcut test_struct {
+    int test;
+};
+
+struct test_struct test = (struct test_struct){1};
+
+Gcc可以有，VC真没有。
+
+宏替换方式两者也不相同，Gcc嵌套替换宏，VC会一次全部替换宏。
+
+
+10 stack:
+
+
+通过栈中返回地址和变量的压栈关系，我们可以得到调用者的地址：
+
+void foo(int a, int b)
+{
+    printf("%x\n", ((unsigned long *)&a)[-1]);
+}
+
+下面这个技巧可能是最危险的，它需要四个条件才能正常工作：
+1.源代码函数的编写顺序和生成顺序相对应，并且先实现的函数在低地址，
+后实现的在高地址。
+2.禁止增量链接。增量链接会生成@ITL跳转表，函数首地址只是表中偏移地址。
+增量编译的原理主要是通过改写跳转表代替重新编译函数调用。
+3.禁止内联。只有禁止内联才能生成函数调用框架(/Oy)。
+4.禁止FPO。打开FPO的程序有参数压栈指令而没有call、ret指令。
+
+#include <assert.h>
+#pragma comment(linker, "/INCREMENTAL:NO")
+#pragma optimize("y", off)
+__declspec(noinline) void foo(int a, int b);
+__declspec(noinline) void foo_only_called(int a, int b);
+#pragma optimize("", on)
+void foo_only_called(int a, int b)
+{
+    foo(0, 0);
+}
+void foo(int a, int b)
+{
+    unsigned long ret_addr = ((unsigned long *)&a)[-1];
+    assert((ret_addr < (unsigned long)foo) &&
+        (ret_addr > (unsigned long)foo_only_called));
+}
+int main(int argc, char* argv[])
+{
+    foo_only_called(0, 0);
+    foo(0, 0);
+}
+
+foo只能从foo_only_called中调用，main调用foo会引发断言。
+如果函数没有参数，则需要用内置函数_AddressOfReturnAddress和_ReturnAddress。
+在这里_ReturnAddress()和ret_addr是相等的，都是mov eax,dword ptr [ebp+4]。
+gcc相关参数是--enable-frame-pointer/-fomit-frame-pointer,
+__attribute__((noline)), #pragma GCC optimize ("O0")(gcc4.4)或设置函数属性
+O0禁止了FPO优化。
+
+栈的故事到这里还没有结束。众所周知，内存分配往往是性能瓶颈，如果小量并且
+频繁分配的内存从栈分配而不是从堆分配，那么程序的性能会有一定的提升，并且
+栈内存不会泄漏，它不需要释放。一般从栈中分配内存是用alloca函数，它会帮你
+刺探栈内存是否够用，它失败也仅仅因为此。内存分配好后，它会自动更新esp。
+类似的方案还有C99支持的变长数组，但变长数组不好控制，并且编译器未必兼容。
+
+X86的栈回溯的工作原理也是通过EBP寄存器一步一步得到每个栈信息：
+
+_asm mov FramePointer, EBP
+
+我们知道在函数开始处都有：
+
+push ebp
+mov ebp, esp
+
+作为函数的最开始两句代码。这样根据EBP就可以找到所有的函数地址。
+NextFramePointer = *(PULONG_PTR)(FramePointer);
+ReturnAddress = *(PULONG_PTR)(FramePointer + sizeof(ULONG_PTR));
+更多信息请参考作者的另一篇文档《Windows NT Stack Trace》。
+
+
+11 trap:
+
+
+有时程序为了调试等目的，需要主动触发异常。下面两句都可以达到这样的效果：
+
+__asm ud2
+__asm int 3
+
+x86为触发错误指令异常定义了0x0f0xb9和0x0f0x0b两个未定义指令，也就是
+ud1和ud2。int 3是群众喜闻乐见的唤醒调试器指令，值为0xcc，中文为烫。
+
+
+12 bit:
+
+
+用C操作bit是很酷的事：所谓酷就是玩得好很精彩，玩不好就很惨。下面是例子：
+
+x & (x-1)                                               将X的最低位1置0
+x | (x+1)                                               将X的最低位0置1
+((WORD)(((BYTE)(a)) | ((WORD)((BYTE)(b))) << 8))        将a和b合成一个字。
+((LONG)(((WORD)(a)) | ((DWORD)((WORD)(b))) << 16))      合成双字。
+((WORD)(((DWORD)(l) >> 16) & 0xFFFF))                   取高位两个字节。
+((BYTE)(((WORD)(w) >> 8) & 0xFF))                       取高位一个字节。
+
+交换高位字节和低位字节：
+
+((((x) & 0xff00) >> 8) | (((x) & 0x00ff) << 8))
+
+(((x) & 0xff000000) >> 24) |
+(((x) & 0x00ff0000) >> 8) |
+(((x) & 0x0000ff00) << 8) |
+(((x) & 0x000000ff) << 24)
+
+SetFlag、ClearFlag、FlagOn标志位操作：
+
+x |= flag;
+x &= flag;
+x &= ~flag;
+
+
+13 naked:
+
+
+下面的代码中，调用test_naked会触发断言吗？
+
+void foo(void)
+{
+    return;
+}
+__declspec(naked)
+void test_naked(void)
+{
+    __asm jmp foo
+    assert(0);
+}
+
+答案是不会。naked函数并不建立函数自己的栈框架，而是用调用者的。test_naked用
+jmp调用foo，那么调用test_naked的call指令和foo的ret指令会使程序直接返回到
+调用test_naked的下一个指令。
+
+
+14 inline:
+
+
+You cannot force the compiler to inline a particular function,
+even with the __forceinline keyword
+FIXME. GCC extern inline

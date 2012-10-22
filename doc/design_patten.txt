@@ -128,7 +128,7 @@ GetInstance(void) {
             virtual Operation();
             virtual Add();
             virtual Delete();
-            vritual GetChild();
+            virtual GetChild();
         };
         class Leaf : public Component {
             virtual Operation();
@@ -278,7 +278,7 @@ class Context {
     Strategy *strategy;
 };
 class Strategy {
-    vritual interface();
+    virtual interface();
 };
 class ConcreteStrategy {
     virtual interface();

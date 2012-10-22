@@ -1,0 +1,313 @@
+文档名称：Windows NT Stack Trace
+文档维护：welfear
+创建时间：2009年6月7日
+更新内容：对StackWalk的分析(2009.6.17)
+更新内容：对x64栈的分析(2009.6.19)
+
+在系统软件开发中有时会有得到函数调用者的信息的需要，为此WindowsNT专门提供了调用
+RtlGetCallerAddress为内核开发者使用，但它并没有公开所以也就不能为驱动开发者使用。
+然而在兼容过程中又无法避免使用它，所以我们只好探究其原理。
+RtlGetCallerAddress可以由两种方法实现，其原型如下：
+
+VOID
+RtlGetCallersAddress(
+    OUT PVOID *CallersAddress, //address to save the first caller.
+    OUT PVOID *CallersCaller   //address to save the second caller.
+)
+
+
+
+
+
+第一种方法，它的主要实现是在RtlCaptureStackBackTrace中完成的。而在这个
+RtlCaptureStackBaceTrace在各个版本的WindowsNT中都有着重要的作用。这是一个比较通用
+的获得栈信息的函数。原型如下：
+
+USHORT
+RtlCaptureStackBackTrace(
+IN ULONG FramesToSkip, IN ULONG FramsToCapture,
+OUT PVOID *BackTrace, OUT PULONG BackTraceHash);
+
+栈信息的获得是通过另外一个导出函数RtlWalkFrameChain实现的。原型如下：
+
+ULONG
+RtlWalkFrameChain(OUT PVOID *Callers, IN ULONG Count, IN ULONG Flags);
+
+在X86平台上，它的工作原理很简单，就是通过EBP寄存器一步一步得到每个栈的信息。
+_asm mov FramePointer, EBP;
+在得到EBP内容之后，我们需要计算当前内核栈的范围，这是因为我们在计算数据时不能
+跑出一个范围，否则会有蓝屏的危险。栈的开始地址就设置为EBP指针指向的地址。
+而终止范围是比较难确定的。这个地址可以使用KeGetCurrentThread()->StackBase的值，但
+这并不保险，在DPC环境中，如果栈内存很换出，则还是会蓝屏。有一点是可以肯定的，
+当前的EBP栈是没有被换出的，如果可能就在当前栈所在页的上一页末作为栈的终止地址。
+我们知道在函数开始处都有：
+
+push ebp
+mov ebp, esp
+
+作为函数的最开始两句代码。这样根据EBP就可以找到所有的函数地址。
+NextFramePointer = *(PULONG_PTR)(FramePointer);
+ReturnAddress = *(PULONG_PTR)(FramePointer + sizeof(ULONG_PTR));
+这里有两点需要注意：
+1、ReturnAddress应该在StackStart和StackEnd之间。
+2、ReturnAddress不能小于64K（这是由WindowsNT的设计决定的）。
+
+
+
+
+在另一种实现中，RtlGetCallerAddress是个精简过的函数，因为RtlCaptureStackBackTrace
+太危险了也太复杂了。下面我们分析这个版本的RtlGetCallerAddress是如何工作的，
+这里面有几处偏移应该先交代一下：
+1、fs:124h是KTHREAD的首地址，实际上这句代码就是KeGetCurrentThread()产生的。
+2、eax + 18h是KTHREAD的InitialStack的偏移。
+3、eax + 1Ch是KTHREAD的StackLimit的偏移。
+
+为了方便阅读，代码将会被分段显示如下：
+
+.text:0044BAA4 000                 push    ebp
+.text:0044BAA5 004                 mov     ebp, esp
+.text:0044BAA7 004                 push    ebx
+.text:0044BAA8 008                 push    esi
+.text:0044BAA9 00C                 push    edi
+.text:0044BAAA 010                 mov     eax, large fs:124h
+.text:0044BAB0 010                 push    dword ptr [eax+18h]
+.text:0044BAB3 014                 push    esp
+.text:0044BAB4 018                 push    offset loc_44BB2F
+.text:0044BAB9 01C                 push    large dword ptr fs:0
+.text:0044BAC0 020                 mov     large fs:0, esp
+
+开头几句是为了当前线程内核栈的相关变量值，这里的loc_44BB2F是异常的处理函数。
+显然这里用到了VC的异常处理机制。具体细节可以毛老师的项目白皮书。
+
+.text:0044BAC7 020                 xor     esi, esi        ; Logical Exclusive OR
+.text:0044BAC9 020                 xor     edi, edi        ; Logical Exclusive OR
+.text:0044BACB 020                 mov     edx, ebp
+.text:0044BACD 020                 mov     edx, [edx]
+.text:0044BACF 020                 cmp     edx, ebp        ; Compare Two Operands
+.text:0044BAD1 020                 jbe     short loc_44BAEE ; Jump if Below or Equal (CF=1 | ZF=1)
+
+这是比较当前栈和上一个栈的地址，当然如果没有问题的情况下自然是当前的地址低。否则就要跳到
+loc_44BB0D中退出了。
+
+.text:0044BAD3 020                 cmp     edx, [ebp+var_10] ; Compare Two Operands
+.text:0044BAD6 020                 jnb     short loc_44BB0D ; Jump if Not Below (CF=0)
+.text:0044BAD8 020                 cmp     edx, [eax+1Ch]  ; Compare Two Operands
+.text:0044BADB 020                 jb      short loc_44BB0D ; Jump if Below (CF=1)
+
+edx一直保存着调用者的栈指针，它应该是在InitialStack和StackLimit之间。如果不是都要跳入loc_44BB0D
+检测Dpc环境下的栈情况。
+
+.text:0044BADD     loc_44BADD:                             ; CODE XREF: RtlGetCallersAddress(x,x)+87j
+.text:0044BADD 020                 mov     esi, [edx+4]
+.text:0044BAE0 020                 mov     edx, [edx]
+.text:0044BAE2 020                 cmp     edx, ebp        ; Compare Two Operands
+.text:0044BAE4 020                 jbe     short loc_44BAEE ; Jump if Below or Equal (CF=1 | ZF=1)
+.text:0044BAE6 020                 cmp     edx, [ebp+var_10] ; Compare Two Operands
+.text:0044BAE9 020                 jnb     short loc_44BAEE ; Jump if Not Below (CF=0)
+.text:0044BAEB 020                 mov     edi, [edx+4]
+
+esi保存了调用者函数的地址。edx由于mov edx, [edx]而继续向上找了一个栈，它应该在InitialStack和当前栈指针之间。
+最后edi保存了调用者的调用者返回地址。这样两个返回参数都已经得到了。
+
+.text:0044BAEE     loc_44BAEE:                             ; CODE XREF: RtlGetCallersAddress(x,x)+2Dj
+.text:0044BAEE                                             ; RtlGetCallersAddress(x,x)+40j ...
+.text:0044BAEE 020                 mov     ecx, [ebp+CallersAddress]
+.text:0044BAF1 020                 jecxz   short loc_44BAF5 ; Jump if ECX is 0
+.text:0044BAF3 020                 mov     [ecx], esi
+.text:0044BAF5
+.text:0044BAF5     loc_44BAF5:                             ; CODE XREF: RtlGetCallersAddress(x,x)+4Dj
+.text:0044BAF5 020                 mov     ecx, [ebp+CallersCaller]
+.text:0044BAF8 020                 jecxz   short loc_44BAFC ; Jump if ECX is 0
+.text:0044BAFA 020                 mov     [ecx], edi
+.text:0044BAFC
+.text:0044BAFC     loc_44BAFC:                             ; CODE XREF: RtlGetCallersAddress(x,x)+54j
+.text:0044BAFC 020                 pop     large dword ptr fs:0
+.text:0044BB03 01C                 pop     edi
+.text:0044BB04 018                 pop     edi
+.text:0044BB05 014                 pop     edi
+.text:0044BB06 010                 pop     edi
+.text:0044BB07 00C                 pop     esi
+.text:0044BB08 008                 pop     ebx
+.text:0044BB09 004                 pop     ebp
+.text:0044BB0A 000                 retn    8               ; Return Near from Procedure
+
+这些都是函数的扫尾工作。下面的工作是为了处理异常的，因为这个函数实在是太危险了。
+
+.text:0044BB0D
+.text:0044BB0D     loc_44BB0D:                             ; CODE XREF: RtlGetCallersAddress(x,x)+32j
+.text:0044BB0D                                             ; RtlGetCallersAddress(x,x)+37j
+.text:0044BB0D 020                 cmp     large dword ptr fs:994h, 0 ; Compare Two Operands
+.text:0044BB15 020                 mov     eax, large fs:988h
+.text:0044BB1B 020                 jz      short loc_44BAEE ; Jump if Zero (ZF=1)
+.text:0044BB1D 020                 cmp     edx, eax        ; Compare Two Operands
+.text:0044BB1F 020                 mov     [ebp+var_10], eax
+.text:0044BB22 020                 jnb     short loc_44BAEE ; Jump if Not Below (CF=0)
+.text:0044BB24 020                 sub     eax, 3000h      ; Integer Subtraction
+.text:0044BB29 020                 cmp     edx, eax        ; Compare Two Operands
+.text:0044BB2B 020                 ja      short loc_44BADD ; Jump if Above (CF=0 & ZF=0)
+.text:0044BB2D 020                 jmp     short loc_44BAEE ; Jump
+
+994是DpcRoutineActive的偏移地址。如果没有当前Dpc函数运行，那一定是出问题了跳到loc_44BAEE准备返回。
+988是DpcStack的偏移地址。如果当前是Dpc Stack，那么edx的值应该在DpcStack和DpcStackLimit范围之内。
+DpcStackLimit的值是通过DpcStack减掉内核栈大小得到的。普通的内核栈都是3个PAGE_SIZE，每个PAGE_SIZE
+在x86中是4KB。所以要减掉3000h那么大。最后有两条路可以走，一是跳到loc_44BADD继续计算，二是跳到loc_44BAEE
+准备返回。
+
+.text:0044BB2F
+.text:0044BB2F     loc_44BB2F:                             ; DATA XREF: RtlGetCallersAddress(x,x)+10o
+.text:0044BB2F 020                 mov     eax, [esp+1Ch+var_10]
+.text:0044BB33 020                 mov     edi, [eax+9Ch]
+.text:0044BB39 020                 mov     esp, [esp+1Ch+var_14]
+.text:0044BB3D 020                 jmp     short loc_44BAEE ; Jump
+
+简单处理了一下异常列表。实际上没什么用。
+
+在应用程序中，有时需要通过观察栈信息进行调试分析。例如下面的代码就是从VC2003中的atlutil.h文件中
+摘录的：
+ATL_NOINLINE inline void AtlDumpStack(IStackDumpHandler *pHandler)
+{
+	ATLASSERT(pHandler);
+
+	pHandler->OnBegin();
+
+	CAtlArray<void *> adwAddress;
+	HANDLE hProcess = ::GetCurrentProcess();
+	if (SymInitialize(hProcess, NULL, FALSE))
+	{
+		// force undecorated names to get params
+		DWORD dw = SymGetOptions();
+		dw &= ~SYMOPT_UNDNAME;
+		SymSetOptions(dw);
+
+		HANDLE hThread = ::GetCurrentThread();
+		CONTEXT threadContext;
+
+		threadContext.ContextFlags = CONTEXT_FULL;
+
+		if (::GetThreadContext(hThread, &threadContext))
+		{
+			STACKFRAME stackFrame;
+			memset(&stackFrame, 0, sizeof(stackFrame));
+			stackFrame.AddrPC.Mode = AddrModeFlat;
+
+			DWORD dwMachType;
+
+#if defined(_M_IX86)
+			dwMachType                  = IMAGE_FILE_MACHINE_I386;
+
+			// program counter, stack pointer, and frame pointer
+			stackFrame.AddrPC.Offset    = threadContext.Eip;
+			stackFrame.AddrStack.Offset = threadContext.Esp;
+			stackFrame.AddrStack.Mode   = AddrModeFlat;
+			stackFrame.AddrFrame.Offset = threadContext.Ebp;
+			stackFrame.AddrFrame.Mode   = AddrModeFlat;
+#elif defined(_M_MRX000)
+			// only program counter
+			dwMachType                  = IMAGE_FILE_MACHINE_R4000;
+			stackFrame.AddrPC. Offset    = threadContext.Fir;
+#elif defined(_M_ALPHA)
+			// only program counter
+			dwMachType                  = IMAGE_FILE_MACHINE_ALPHA;
+			stackFrame.AddrPC.Offset    = (unsigned long) threadContext.Fir;
+#elif defined(_M_PPC)
+			// only program counter
+			dwMachType                  = IMAGE_FILE_MACHINE_POWERPC;
+			stackFrame.AddrPC.Offset    = threadContext.Iar;
+#elif defined(_M_IA64)
+			// only program counter
+			dwMachType                  = IMAGE_FILE_MACHINE_IA64;
+			stackFrame.AddrPC.Offset =  threadContext.StIIP;
+
+#elif defined(_M_ALPHA64)
+		 // only program counter
+		 dwMachType                  = IMAGE_FILE_MACHINE_ALPHA64;
+		 stackFrame.AddrPC.Offset    = threadContext.Fir;
+#else
+#error("Unknown Target Machine");
+#endif
+
+			adwAddress.SetCount(0, 16);
+
+			int nFrame;
+			for (nFrame = 0; nFrame < _ATL_MAX_STACK_FRAMES; nFrame++)
+			{
+				if (!StackWalk(dwMachType, hProcess, hProcess,
+					&stackFrame, &threadContext, NULL,
+					CStackDumper::FunctionTableAccess, CStackDumper::GetModuleBase, NULL))
+				{
+					break;
+				}
+				adwAddress.SetAtGrow(nFrame, (void*)(DWORD_PTR)stackFrame.AddrPC.Offset);
+			}
+		}
+	}
+	else
+	{
+		DWORD dw = GetLastError();
+		char sz[100];
+		_snprintf(sz, 100, 
+			"AtlDumpStack Error: IMAGEHLP.DLL wasn't found. "
+			"GetLastError() returned 0x%8.8X\r\n", dw);
+
+		// ensure null-terminated
+		sz[sizeof(sz)-1] = '\0';
+
+		pHandler->OnError(sz);
+	}
+
+	// dump it out now
+	INT_PTR nAddress;
+	INT_PTR cAddresses = adwAddress.GetCount();
+	for (nAddress = 0; nAddress < cAddresses; nAddress++)
+	{
+		CStackDumper::_ATL_SYMBOL_INFO info;
+		UINT_PTR dwAddress = (UINT_PTR)adwAddress[nAddress];
+
+		LPCSTR szModule = NULL;
+		LPCSTR szSymbol = NULL;
+
+		if (CStackDumper::ResolveSymbol(hProcess, dwAddress, info))
+		{
+			szModule = info.szModule;
+			szSymbol = info.szSymbol;
+		}
+		pHandler->OnEntry((void *) dwAddress, szModule, szSymbol);
+	}
+	pHandler->OnEnd();
+}
+
+针对这段代码有几点需要说明：
+1、应用层中一般使用GetThreadContext或通过设置未捕获异常来得到某一时刻的CPU各个寄存器的状态。
+2、在出现未捕获异常时，异常过滤函数得到的是出问题的函数出错时的状态，这样可以很好的获得出错信息。
+3、GetThreadContext的使用在MSDN中有说明，它不能获得当前线程的上下文信息。使用这个函数需要挂起
+    当前线程。在VC2005中附带的代码来看，它先是另外创建了一个线程，然后在本线程WaitForSingleObject等待
+    新创建的线程退出，然后再继续运行。
+4、无论是VC20003还是VC2005，它们的代码都有问题。VC2005中的代码使用下面的方式：
+    while (WaitForSingleObject(hThread, 0) != WAIT_TIMEOUT);
+    看注释的意思是CE对WaitForSingleObject支持不好而这么做的。
+    而VC2003的代码问题就比较多了，GetThreadContext应该是获得挂起线程的上下文，这在VC2005的注释里也提到了。
+5、StackWalk的作用是前面分析Stack Trace。使用它的好处是代码有可移植性。使用之前需要用GetThreadContext的内容
+    初始化。
+6、在MSDN中有如下一段对GetThreadContext的描述：
+
+You cannot get a valid context for a running thread. Use the SuspendThread function to suspend the thread before calling GetThreadContext.
+If you call GetThreadContext for the current thread, the function returns successfully; however, the context returned is not valid.
+
+    但我直接使用GetCurrentThread来调用GetThreadContext得到的结果是正确的，而且VC自带的代码也这么用，真让人不解。
+    可后来修改的代码和注释表明似乎，这是个问题。现在我的理解是要得到“当前”的CPU状态要先SuspendThread，而想得到
+    进入内核前的CPU状态则可以直接使用GetThreadContext获得，MSDN中的无效是指得到并不是调用者“当时”的CPU状态。
+
+
+x64只支持一种调用方式：fastcall。x64调用的前四个参数使用RCX、RDX、R8、R9，然后才使用栈传递。调用者负责维护栈平衡。
+在x64中,VC不支持asm关键字，所以获得EBP要困难一些。但我记得在Linux中有一个获得EBP的巧妙方法。
+
+VOID
+GetCallerAddress(ULONG_PTR arg)
+{
+    ULONG_PTR EBP = (&arg)[-1];
+}
+
+在应用层中使用Stack Trace技术就不用那么小心了，直接使用循环，然后捕获异常就可以了。
+
+具体代码见：《Authoring a Stack Walker for x86》。
+x64栈详细信息见《Assembler Language Functions for Windows x64 and Vista 》。

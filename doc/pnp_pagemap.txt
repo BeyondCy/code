@@ -1,0 +1,112 @@
+文档名称：NT PnP && Memory Page Map
+文档维护：Xuefeng Chang(welfear@gmail.com)
+创建时间：2009.7.26
+
+
+
+一、初始化
+
+系统在引导时会调用IopInitializePlugPlayServices初始化即插即用服务。
+初始化过程有如下步骤：
+
+1、判断默认总线类型。通过查询文件系统分配表中的HalQuerySystemInformation得到
+当前系统的总线信息。除了IBM的MCA之外，查询到的其他类型的总线信息都认为是ISA总线。
+2、初始化根仲裁器。相关的设备有端口设备、物理内存、中断、总线设备。
+初始化过程设置了ARBITER_INSTANCE结构中必须提供的四个回调函数
+(unpack/score requirement和pack/unpack resource)。
+3、打开或创建CCS\Enum\Root键、创建HTREE\ROOT\0键。初始化拔除设备列表、意外拔除设备列表、
+设备树同步资源锁、设备树为空通知事件、设备树枚举操作通知事件、PnP自旋锁、DockDevice的
+链表和互斥锁。(WarmDevice)
+4、创建名为PnpManager的驱动对象。创建未命名的设备对象。
+PnpManager驱动中只设置了AddDevice、IRP_MJ_PNP、IRP_MJ_POWER这三个必须的回调函数用于枚举
+系统中其他设备。而创建的这个未命名对象就是第一个pdo设备。照例pdo设备都会在Flags中设置
+DO_BUS_ENUMERATED_DEVICE，这也是判断PDO和FDO的标准之一。
+5、分配根设备结点。分配的同时，相关的数据也就完成初始化过程，其中包括：设备结点计数、
+总线类型（也就是默认总线类型）、本结点的枚举互斥锁、本结点内的仲裁器和转换器列表、并设置了
+PDO和NODE两个结构的相互指针。设置Flags为DNF_STARTED、DNF_PROCESSED、DNF_ENUMERATED，并
+把它命名为HTREE\ROOT\0。
+6、打开CCS\Control\Pnp键。如果DetectionEnabled项，就把项的值传给PnPDetectionEnabled，看样子这个
+项可以控制PnP的枚举。当然，默认情况是开启的。
+7、初始化PnP Notify。有的驱动要管理某一类的设备就需要注册一个通知来获得它感兴趣设备的插入和拔除。
+比如fdisk，就是通过这种机制管理磁盘设备的。
+8、以上7步就是第一次初始化过程，第二次初始化过程还要根据CCS\Pnp\DisableFirmwareMapper的值俩决定
+是否枚举固件。
+
+
+二、枚举过程
+
+在初始化的第一和第二过程都会开启根结点的枚举操作。枚举操作有以下几种：
+枚举设备树、枚举设备、枚举根设备、枚举引导设备等。其中根设备和引导设备是同步枚举的，其它都是
+通过工作项异步枚举的。在Windows 2000以前是通过IopDeviceActionWorker，而Windows XP是通过
+PipDeviceActionWorker实现枚举。枚举设备树要经过以下几步：
+
+
+枚举请求被放入一个列表之中，每个请求通过PI_DEVICE_REQUEST结构描述。在Worker得到运行的时候，
+它会处理每个挂在列表中的请求。在获得某一个请求时，它可能会经历如下处理过程：
+
+1、重新处理引导设备资源。有时在第一次枚举设备的时候会出现资源不足或是资源需求改变的情况，
+所以就应该有机制再次处理并满足这些设备的资源需求。
+2、重新分配设备资源。只处理资源需求改变的情况。
+3、重新满足设备资源。只处理资源未被满足的情况。
+4、开始新设备。
+5、重新枚举设备树。
+
+在处理各种设备节点请求时需要特别注意同步问题和树节点的状态控制。除去复杂的逻辑判断，实际上
+起主要实现函数只有以下几个：
+
+IopProcessAssignResources、IopProcessStartDevices、IopRestartDeviceNode、
+IopProcessNewDeviceNode、IopBusCheck
+
+三、调用关系
+
+IopBusCheck使用IopEnumerateDevice、IopProcessAssignResources、IopProcessStartDevices完成主要
+功能。
+
+1、IopEnumerateDevice，它会根据传入的参数作为PDO，并枚举这个总线上所有的PDO。
+它会调用IopQueryDeviceRelations向这个PDO的驱动发送IRP_MJ_PNP和IRP_MN_QUERY_DEVICE_RELATIONS。
+根据驱动返回的数据设置这个PDO对应的设备节点。分配子节点时会使用IopAllocateDeviceNode和
+IopInsertTreeDeviceNode。最后通过调用IopProcessNewChildren为新的子节点调用AddDevice回调函数。
+IopProcessNewDeviceNode用来查询注册表并创建对应设备实例，IopCallDriverAddDevice是用来调用
+AddDevice的。
+
+2、IopProcessStartDevices，实际上起关键作用的是IopProcessStartDevicesWorker。它对本结点及其所有
+的子结点递归使用IopStartAndEnumerateDevice。顾名思义，它有IopStartDevice和IopEnumerateDevice
+两个过程。IopStartDevice的实现是向对应驱动发送IRP_MJ_PNP和IRP_MN_START_DEVICE。
+
+3、IopProcessNewDeviceNode，首先创建HKLM\System\CCS\Enum中对应项，然后向对应驱动发送IRP_MJ_PNP和
+IRP_MN_QUERY_ID查询UID/PID，接着发送IRP_MJ_PNP和IRP_MN_QUERY_CAPABILITIES查询兼容ID，用
+IRP_MJ_PNP和IRP_MN_QUERY_DEVICE_TEXT查询设备描述字符，创建HKLM\System\Enum\<Enumerator>\deviceId
+中的对应项，最后用IRP_MJ_PNP和IRP_MN_QUERY_RESOURCE_REQUIREMENTS查询基本配置信息。在处理完注册表
+与驱动查询之后发送PnP事件。
+
+4、IopRestartDeviceNode，它是用来释放在创建设备节点时分配的内存，这样就为重新枚举做了清理工作。
+
+5、IopProcessAssignResources，它枚举本节点以及子结点，为它们分配IOP_RESOURCE_REQUEST结构并设置部分值。
+
+
+以下内容限定于运行Windows XP的x86常规二级映射计算机上。
+
+在Windows中，段描述符CS(1B)、DS(ES SS)(23)、FS(38)、GS(0)的TI位都是0，表示它们都是全局描述符表，
+而GS、FS的RPL是0以外，其它的都是3。和Linux类似，系统中内存权限和分配的真正机制也是分页映射。其中，
+CR0的PG位决定是否是否分页机制。CR2记录了分页过程中出现异常的线性地址。CR3保存的则是整个分页过程
+的起始地址。
+
+页目录和页表用来实现二级映射。由于每个Page的大小为4KB，所以它们低12位就用来做标志位，表示当前页的
+各种属性。页目录和页表各自承担了10bit的寻址任务，这样每个PDE/PTE都有1024个项。在访问一个线性地址时，
+通过CR3得到了PDE的物理地址，用高10bit作为PDE的索引就找到了当前PDE项对应的PTE，再用中10bit作为PTE的
+索引就找到了当前要访问的页的物理地址，低12bit就是当前物理页的偏移。
+
+lkd> !process 0 0
+PROCESS 89015020 SessionId: 0 Cid: 0d9c Peb: 7ffde000 ParentCid: 02f8
+DirBase: 0a480700 ObjectTable: e57495f8 HandleCount: 67.
+Image: windbg.exe
+
+DirBase就是进程切换为windbg.exe时CR3的值，因此它的页目录就在0a480700处。而进程的页目录线性地址就从
+0xC0000000开始到0xC03FFFFF结束的。页目录的前512项用于映射2GB以下的内存，而后510项直接指向系统PTE表。
+因此每个进程都有自己的2GB空间而共享2GB的内核空间，在线程进入内核后使用自己的内核栈但感受不到进程空间
+的限制。
+
+但同时PDE也是特殊的PTE。每个PTE可以描述4MB大小的页，1024个PTE就可以完整映射全部4GB的内存空间，这1024个
+PTE所在的页当然也在这个内存空间之内，那么映射这1024个PTE的页的PTE就是PDE完全一样了。这样即使描述整个
+4GB的内存空间需要1个PDE和1024个PTE，但如果把PDE看做是一个特殊的PTE就可以仍然最多使用4MB的内存。那么PDE
+的地址应该设置在: (0xC0000000 >> 12) * 4 + 0xC0000000 = 0xC0300000。

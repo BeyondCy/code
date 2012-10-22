@@ -1,0 +1,253 @@
+文档名称：意料之外，情理之中
+文档维护：Xuefeng Chang(welfear@gmail.com)
+文档时间：2012.5.1
+
+
+本文将结论放在最前面：
+
+预防问题，让异常情况主动暴露出来；
+根据可靠的线索进行推理和猜测；
+区分线索和问题原因；
+大胆猜测，小心论证；
+尽量寻找事实证据，以事实为依据；
+重复稳定现象，以稳定现象作为突破口；
+
+
+BUG描述：
+在播放时断网并拖动播放器窗口，界面有几秒钟不响应用户操作。
+并且只有在拖拽窗口时才会有界面阻塞的现象，如果前三秒没有拖拽
+操作，那么一切看起来都很正常。
+
+起初这个问题并没有获得太多的重视，因为GUI阻塞可能存在于锁或者是窗口过程
+长时间没有返回，这些问题在仔细查看过代码之后都会找到答案。但当接手处理时
+才发现，这个问题并不是想象中那么容易。
+
+首先，查找代码中所有锁的使用，没有发现阻塞问题。但问题总会和Qt,DirectShow
+相关吧？建立脚手架，监控所有长时间的函数调用。结果发现调用API DefWindowProc
+消耗了绝大多数时间。但，如果是API有问题如何调试？难道是Windows的问题？
+新手在怀疑操作系统出问题的时候总会被老手嘲笑。;-)
+
+下意识地我将方向放在Qt上，继续在Qt传入口打印更多的信息并得到下面的栈：
+
+ntdll.dll+0xe4f4 DefWindowProcW RealDefWindowProcWorker
+USER32.dll+0x18dd9
+USER32.dll+0x18d77
+QtGuid4.dll+0x842aa2
+QtGuid4!QWinInputContext::DefWindowProcW:
+65842a9c ff15a00ed365    call    dword ptr [QtGuid4!_imp__DefWindowProcW (65d30ea0)]
+QtGuid4.dll+0x130d36
+65130d18 eb3d            jmp     QtGuid4!QtWndProc+0x33f7 (65130d57)
+65130d1a c605f281d26500  mov     byte ptr [QtGuid4!inLoop (65d281f2)],0
+65130d21 8b5514          mov     edx,dword ptr [ebp+14h]
+65130d24 52              push    edx
+65130d25 8b4510          mov     eax,dword ptr [ebp+10h]
+65130d28 50              push    eax
+65130d29 8b4d0c          mov     ecx,dword ptr [ebp+0Ch]
+65130d2c 51              push    ecx
+65130d2d 8b5508          mov     edx,dword ptr [ebp+8]
+65130d30 52              push    edx
+65130d31 e8c4aceeff      call    QtGuid4!ILT+109045(?DefWindowProcWQWinInputContextSAJPAUHWND__IIJZ)
+QtGuid4.dll+0x842aa2
+QtGuid4.dll+0x130d36
+USER32.dll+0x8734 InternalCallWinProc
+USER32.dll+0x8816
+USER32.dll+0x18ea0
+USER32.dll+0x18eec
+ntdll.dll+0xe453
+USER32.dll+0x18dd9
+USER32.dll+0x18d77
+TPlayer.exe+0x7888ac DefWindowProc
+
+在处理WM_NCLBUTTONDOWN消息的时候，QtWndProc又调用了一次DefWindowProc。
+第二次调用处理的消息是WM_SYSCOMMAND。这是合理的，在非客户区处理鼠标
+消息会引起Window对当前窗口的移动，而移动操作是通过DefWindowProc对
+WM_SYSCOMMAND的响应完成的。
+
+再次陷入僵局，看看DirectShow的情况吧，也许是DirectShow的什么操作导致
+Windows要进入等待状态。可奇怪的是栈上没有多少DirectShow的代码：
+
+TPlayer.exe!HTTPMediaProtocal::Read
+TPlayer.exe!CP2PVod::ReadData
+TPlayer.exe!CStreamP2P::Read
+TPlayer.exe!CStreamSource::Read
+TPlayer.exe!CDLTask::Read
+TPlayer.exe!CScheduler::Read
+TPlayer.exe!CHTTPStream::Read
+TPlayer.exe!CAsyncRequest::Complete
+TPlayer.exe!CAsyncIo::SyncReadAligned
+TPlayer.exe!CAsyncIo::SyncRead
+TPlayer.exe!CAsyncOutputPin::SyncRead
+TPlayer.exe!CBaseSplitterFile::Read
+TPlayer.exe!CBaseSplitterFile::BitRead
+TPlayer.exe!CFLVSplitterFilter::CreateOutputs
+TPlayer.exe!CBaseSplitterFilter::CompleteConnect
+TPlayer.exe!CBaseSplitterInputPin::CompleteConnect
+TPlayer.exe!CBasePin::ReceiveConnection
+TPlayer.exe!CBasePin::AttemptConnection
+TPlayer.exe!CBasePin::TryMediaTypes
+TPlayer.exe!CBasePin::AgreeMediaType
+TPlayer.exe!CBasePin::Connect
+TPlayer.exe!CAsyncReader::Connect
+TPlayer.exe!CAsyncOutputPin::Connect
+quartz.dll!CFilterGraph::ConnectDirectInternal
+quartz.dll!CFilterGraph::ConnectDirect
+TPlayer.exe!CFGManager::ConnectDirect
+TPlayer.exe!CFGManagerPlayer::ConnectDirect
+TPlayer.exe!CFGManager::ConnectFilterDirect
+TPlayer.exe!CFGManager::RenderTHUrl
+TPlayer.exe!CFGManager::RenderFile
+
+进一步测试发现，用select, recv都会引发阻塞，如果一直等待，
+那么界面也会一直等待，select的等待时间和界面不响应时间差不多。
+根据常识判断，I/O操作和GUI操作应该没有关系才对。难道是Kernel APC
+引起的？GUI唯一可能引起的I/O就是去读人体学设备，也就是鼠标键盘。
+
+事情到了这一步也算是可以交差了，将Read变成异步或添加线程缓冲都
+可以骗过测试和用户了。不过，事情没弄清楚心里总是不踏实的。
+
+接下来的故事就有点文艺了，既然应用程序栈信息不够，那就看看内核栈吧。
+
+DirectShow的内核栈似乎没有看头：
+无论是recv或是select，在问题出现时都会进入
+mswsock.dll SockWaitForSingleObject-> ntdll.dll NtWaitForSingleObject
+而WaitFor的是TEB中的SockEvent。这个锁是安全的，NtWaitForSingleObject会
+再次进入KeWaitForMutexObject并KiDeliverApc，通过SwapContext切换出CPU。
+
+Qt的内核栈很长，不过最后也会进入WaitFor，真正有用的是：
+win32k.sys+0x2f15 KeWaitForSingleObject
+win32k.sys+0x939a8 win32k!xxxSleepThread
+win32k.sys+0x141cd win32k!xxxInterSendMsgEx
+win32k.sys+0xecd4 win32k!SendMessageTimeout
+win32k.sys+0x79e50 win32k!SendMessage
+win32k.sys+0x79d20 win32k!xxxUpdateWindow2
+win32k.sys+0x898ae xxxUpdateWindow->win32k!xxxInternalUpdateWindow
+win32k.sys+0x1061c0 win32k!xxxUpdateThreadsWindows+0x46
+win32k.sys+0x106471 win32k!xxxUpdateThreadsWindows
+win32k.sys+0x10691b win32k!xxxDrawDragRect
+win32k.sys+0xbb43 win32k!xxxSysCommand+0x4d9
+
+处理SysCommand时为什么导致xxxSleepThread？看样子需要绘制拖拽，绘制
+导致UpdateWindow，并会调用SendMessage。真相似乎就在眼前了，然而我们
+却还是什么都不知道。:-(
+
+还是对Win32k.sys动手术吧：
+int __stdcall xxxSleepThread(int a1, signed int Timeout, int a3)
+{
+.......
+
+  v5 = (int)gptiCurrent;
+  v6 = *((_DWORD *)gptiCurrent + 14);
+  v7 = *(_WORD *)(v6 + 10);
+  v8 = *(_WORD *)(v6 + 4);
+  v20 = v7;
+  if ( v8 & a1 )
+  {
+LABEL_23:
+    v21 = 1;
+  }
+  else
+    v9 = a1 | (v4 != 0 ? 0 : 64);
+    while ( 1 )
+      if ( !v4 )
+        if ( *(_BYTE *)(*(_DWORD *)(v5 + 56) + 6) & 0x40 )
+          do
+          {
+            xxxReceiveMessage(v5);
+            v3 = *(_DWORD *)(v5 + 56);
+          }
+          while ( *(_BYTE *)(v3 + 6) & 0x40 );
+.......
+
+      ClearQueueServerEvent(v9);
+      if ( v22 == 258 )
+        UserSetLastError(1460);
+
+
+.......
+          xxxSleepTask(v12, v11, a3, v14);
+          LeaveCrit();
+          v22 = KeWaitForSingleObject(*(PVOID *)(v5 + 168), WrUserRequest, 1, 0, v23);
+          EnterCrit();
+          SleepInputIdle(v16, v15, v5);
+
+      if ( *(_WORD *)(*(_DWORD *)(v5 + 56) + 4) & (_WORD)a1 )
+        goto LABEL_23;
+
+    ClientDeliverUserApc();
+
+LABEL_24:
+  v17 = v21 == 0;
+  *(_WORD *)(*(_DWORD *)(v5 + 56) + 10) = v20;
+  if ( !v17 )
+    *(_DWORD *)(*(_DWORD *)(v5 + 56) + 12) = v7ffe0004 * (unsigned __int64)v7ffe0000 >> 24;
+  return v21;
+}
+
+7ffe0000很眼熟，v7ffe0004 * (unsigned __int64)v7ffe0000 >> 24就是NtGetTickCount。
+因此可以判断v5 + 56处是个消息，参考Messsage的结构：
+typedef struct tagMSG {
+    HWND        hwnd;
+    UINT        message;
+    WPARAM      wParam;
+    LPARAM      lParam;
+    DWORD       time;
+    POINT       pt;
+    DWORD       lPrivate;
+} MSG, *PMSG, NEAR *NPMSG, FAR *LPMSG;
+偏移12是接收消息的时间。
+
+结合v5 = gptiCurrent，我们就可以猜测WaitFor的目的：它是等待新消息的到来，
+而v5+168就是输入事件。WaitFor之前是不断的接收消息，并判断v5+56处也就是MSG的
+lPrivate偏移6字节的是否存在0x40 flag。看来它是在等待特定的消息进入本线程的
+消息队列。再看看
+signed int __fastcall xxxInterSendMsgEx(int a1, int a2, int a3...)
+{
+......
+  v27 = *(_DWORD *)(v25 + 404);
+  v28 = PsGetCurrentProcess(a1, a2);
+  v29 = PsGetProcessWin32Process(v28);
+  if ( !AllowAccessUISandbox(*(_DWORD *)(v29 + 404), v27) )
+    return 0;
+  v34 = a4;
+  if ( a4 > 0xCC )
+  {
+    if ( a4 != 208 )
+    {
+      if ( a4 == 272 )
+        return 0;
+      if ( a4 != 648 )
+        goto LABEL_39;
+    }
+LABEL_16:
+    v32 = PsGetCurrentProcess(a1, a2);
+    v31 = PsGetProcessWin32Process(v32);
+    v59 = *(_DWORD *)(*(_DWORD *)(*(_DWORD *)(a3 + 8) + 44) + 352);
+    if ( v59 != *(_DWORD *)(v31 + 352)
+      || (v60 = PsGetCurrentProcess(v59, a2),
+          v61 = PsGetProcessWin32Process(v60),
+          a1 = *(_DWORD *)(*(_DWORD *)(*(_DWORD *)(a3 + 8) + 44) + 356),
+          a1 != *(_DWORD *)(v61 + 356)) )
+      return 0;
+}
+xxxInterSendMsgEx必须满足一定条件才会不返回0继续执行。
+这些条件是和进程和线程相关的。看来参数a1和a2一定是和线程相关的，
+并且它们一个原窗口另一个是目的窗口，并且这两个窗口不在同一线程。
+一般来说一个进程中只有一个GUI线程，所有的窗口都应该放在这个线程中。
+在TPlayer中，这个例外的窗口就一定是DirectShow管理的窗口了。
+在工程中找的设置Render为WindowedMode的代码，运行后发现这正是
+CGraphThread：
+
+TPlayer.exe!MPCCore::OpenFilePrivate
+TPlayer.exe!MPCCore::OpenUrl
+TPlayer.exe!MPCCoreAPI::OpenUrl
+TPlayer.exe!CPlayerCtrl::OpenURL
+TPlayer.exe!CPlayerCtrl::OpenFileProc
+TPlayer.exe!CGraphThread::OnOpen
+
+这样就合理了。问题真正原因是播放媒体文件时初始化DirectShow窗口应该在
+主线程而不应该在工作线程，修改这段代码的位置即可。至于这算不算是Windows
+的问题，我觉得是算也不算：
+
+在拖动时
+1.应该用同步刷新保证图像实时完整
+2.刷新子窗口时应该判断是否在同一线程，否则好心就办了坏事。

@@ -1,0 +1,361 @@
+文档名称：纷繁复杂的锁(Complex Locks)
+文档维护：Xuefeng Chang(welfear@gmail.com @welfear)
+文档日期：2010.10.28
+
+
+
+零、前言：
+
+
+
+本文试图总结多处理器环境下NT Kernel和Linux Kernel如何使用锁解决内核数据同步
+问题。本文不讨论用户态的锁机制，它们或基于内核锁，或有着相似的原理。本文还
+将涉及到一些的内核同步机制，因为内核锁的设计和整个内核的设计是密不可分的。
+本文只以x86处理器平台为例。
+
+
+
+一、理论：
+
+
+
+并发执行的复杂在于它的不确定性。同时，并发又是无处不在的：
+
+
+1.多处理器：
+
+
+无论是SMP(Symmetric multiprocessing)、CMP(Chip-level multiprocessing)、SMT
+(Simultaneous multithreading)，从软件角度看它们都是多处理器环境。它们都可以
+同时运行多个指令流和多个寄存器组。即使CMP可能没有独立处理器缓存、SMT不能完全
+并发，但它们都会通过共享的总线访问内存单元。
+
+
+2.中断和异常：
+
+
+即使是单处理器环境，并发执行依然存在。从早期单处理器使用的两片级联8259 PIC
+到现在大量使用的APIC以及未来的SAPIC，它们都会向CPU发送IRQ(interrupt request)
+打断执行路径转而运行中断处理指令。处理器内部同样会因为错误、自陷、中止三种
+情况转而执行异常处理指令。
+
+
+3.延迟过程和内核抢占：
+
+
+操作系统会为不同的内核指令分配不同的优先级，高优先级程序可以抢占低优先级程序。
+NT提出IRQL的概念，普通程序运行在最低的PASSIVE_LEVEL级、异步过程程序运行在稍高
+的APC_LEVEL级、延迟过程调用运行在更高的DISPATCH_LEVEL级、硬件中断比它们更高。
+Lin中的概念可以与此对应，这些规则隐含在内核设计原则之中，但并不明确。可以简
+把Lin中的软中断机制或下半段机制和DISPATCH_LEVEL相对应。
+
+
+
+二、实现：
+
+
+
+禁止优化屏障和内存屏障是锁实现的基础。对于Lin来说，barrier()用于禁止GCC优化
+代码，(r/w)MB()或smp_(r/w)mb用于插入代码禁止CPU重排指令序列，内存屏障包含了
+优化屏障的功能。内存屏障用于准确读取数据。对于NT来说，锁的实现受优化屏障的
+影响比较小，因为获得和释放锁都是在函数调用中完成的，内置函数_ReadWriteBarrier
+用于禁止VC优化屏障，KeMemoryBarrier用于禁止内存屏障。volatile可以在用户空间
+程序里发挥准确获得共享数据的作用：可以使其它CPU快速看到数值的修改，保证其它
+CPU看到的指令顺序和代码中的一样。但在内核编程中，volatile往往无效。
+
+
+1.原子锁：
+
+
+现代处理器架构环境中的数据同步主要由硬件机制实现，软件只是辅助。现代多处理器
+往往会提供指令级的硬件同步手段，也就是原子操作。对于x86来说，在指令前添加
+lock前缀属性即可锁住数据总线，此时其它处理器便不能访问相同的内存单元，同时
+刷新处理器高速缓存进而保证缓存和内存的数据一致性。
+
+在Linux的atomic.h中内核提供了针对原子操作的函数。atomic_read和atomic_set没有
+使用汇编，atomic_read只需要确保从内存中读取即可，所以它只用了volatile关键字。
+Linux同时提供了内嵌汇编版本的本地CPU整数操作函数：local.h中的local_xxx函数。
+local_xxx只是禁止了编译器针对当前变量的优化，避免了过多禁止其它优化。
+
+摘录如下：
+static inline int atomic_read(const atomic_t *v)
+static inline void atomic_set(atomic_t *v, int i)
+static inline void atomic_add(int i, atomic_t *v)
+static inline void atomic_sub(int i, atomic_t *v)
+static inline int atomic_sub_and_test(int i, atomic_t *v)
+static inline void atomic_inc(atomic_t *v)
+static inline void atomic_dec(atomic_t *v)
+static inline int atomic_dec_and_test(atomic_t *v)
+static inline int atomic_inc_and_test(atomic_t *v)
+static inline int atomic_add_negative(int i, atomic_t *v)
+static inline int atomic_add_return(int i, atomic_t *v)
+static inline int atomic_sub_return(int i, atomic_t *v)
+static inline int atomic_cmpxchg(atomic_t *v, int old, int new)
+static inline int atomic_xchg(atomic_t *v, int new)
+static inline int atomic_add_unless(atomic_t *v, int a, int u)
+static inline int atomic_dec_if_positive(atomic_t *v)
+static inline short int atomic_inc_short(short int *v)
+static inline void atomic_or_long(unsigned long *v1, unsigned long v2)
+
+NT也有类似的一套机制，并不同的编译环境提供了三套代码。通过使用#pragma
+intrinsic选择编译器实现，也选择内联的C语言中嵌入汇编的实现，或是纯汇编
+实现：
+
+LONG
+FASTCALL
+InterlockedIncrement(
+    IN LONG volatile *Addend
+    );
+
+LONG
+FASTCALL
+InterlockedDecrement(
+    IN LONG volatile *Addend
+    );
+
+LONG
+FASTCALL
+InterlockedExchange(
+    IN OUT LONG volatile *Target,
+    IN LONG Value
+    );
+
+LONG
+FASTCALL
+InterlockedExchangeAdd(
+    IN OUT LONG volatile *Addend,
+    IN LONG Increment
+    );
+
+LONG
+FASTCALL
+InterlockedCompareExchange(
+    IN OUT LONG volatile *Destination,
+    IN LONG ExChange,
+    IN LONG Comperand
+    );
+
+LONG
+InterlockedOr(
+    IN OUT LONG volatile *Target,
+    IN LONG Set
+    );
+
+LONG
+InterlockedAnd(
+    IN OUT LONG volatile *Target,
+    IN LONG Set
+    );
+
+LONG
+InterlockedXor(
+    IN OUT LONG volatile *Target,
+    IN LONG Set
+    );
+
+
+FIXME:
+InterlockedXxxAcquire
+InterlockedXxxRelease
+
+与Lin不同的是，NT只基于lock xadd、cmpxchg和xchg这三个指令实现各种原子函数。
+与针对整数操作相对，NT和Lin也提供了针对位的常用操作，暂且不表。
+
+
+2.忙等锁：
+
+
+忙等锁适用于us级别的等待，占有锁的时间不应该超过25us，否则会有性能问题。忙等锁
+用于解决处理器或处理器之间数据访问的同步问题。
+
+
+2.1.自旋锁：
+
+
+自旋锁是最常用的一种忙等待锁，获得锁时需要不断测试锁的状态，直到锁可用。自旋锁
+本身很简单，但它一旦和操作系统之中相关概念组合在一起就变得复杂起来。同时，它又
+是内核中比较基础的机制，它对系统的影响会体现在方方面面。既要锁，又要防止死锁是
+对自旋锁的最基本要求。单CPU的情况比较简单，只需禁止操作系统对本线程的抢占即可。
+对于Lin只是简单增加本线程抢占计数即可。而对于NT，则要提升IRQL至DISPATCH_LEVEL，
+NT没有仅仅关闭抢占，而是在IRQL下降时给了系统DPC和APC运行机会。针对操作系统调度
+的论述已经超出本文范围，但调度确实对锁的设计有着深刻的影响。这里只指出两者之间
+的设计区别：NT并没有线程抢占计数，在内核线程控制块有NextThread和Preempted两个
+字段用于抢占，但并不是禁止它的发生。事实上，NT的IRQL连调度都禁止了，Lin只禁止
+当前线程被抢占，然而NT并不损失什么，IRQL机制会让你在提高它的时候避免一些麻烦，
+当你让它下降的时候这些都会补回来。对于SMP来说，还需要一个变量同步机器中其它的
+处理器。
+最简单而暴力的同步手段是直接关闭硬件中断，这两个系统都由于各种原因使用它。为了
+让锁适用于不同的软件环境，简单的自旋锁还有几种衍生情况（执行条件依次严格）：
+
+spin_lock->spin_lock_bh(disable softirq)->spin_lock_irq(disable irq)
+
+KeAcquireSpinLock(DISPATCH)->KeAcquireSpinLockRaiseToSynch(SYNCH)
+
+SYNCH_LEVEL和时钟中断级别一样，因此它几乎可以禁止可能引发同步问题的代码（除了
+IPI和Power），它也很少发生，除非系统中出现了大麻烦，比如MMU机制除了严重问题。
+
+显然，自旋锁是不能递归调用的。Lin为使用CONFIG_DEBUG_SPINLOCK编译的内核添加了
+magic、owner_cpu、owner三个字段分别保存SPINLOCK_MAGIC、获得锁的CPU编号和获得
+锁的线程。magic必须和SPINLOCK_MAGIC相同，而owner_cpu和owner不能和当前要进入
+临界区的线程相同，否则就会打印当前内核栈以及name、task_pid等信息。
+NT的内核执行体提供了一组和原子操作函数相同功能的函数，比如：
+InterlockedCompareExchange和ExInterlockedCompareExchange。这些函数已经不再推荐
+使用，它们的实现是基于自旋锁而不是原子指令。它们的存在只是为了兼容无法使用原子
+指令实现的处理器硬件环境。
+
+
+2.2.排队自旋锁：
+
+
+自旋锁会影响系统性能。为了同步多个CPU的状态，CPU必须锁住数据总线，并不停冲刷
+自己的高速缓存，这就加重了系统总线的负担。另外，多个同时想进入临界区的CPU进行
+的是无序的竞争，谁会获得锁完全靠运气，当然这并不公平。为此，NT和Lin都实现了一
+种按照FIFO(先进先出)顺序的排队自旋锁。
+在Linux的x86架构代码中，自旋锁就被实现为一个简单的排队锁(Ticket locks)，但它
+只被用在x86处理器架构相关的代码中，内核使用的锁还是普通的自旋锁。NT的普通自旋锁
+是基于lock bts指令实现的，它只测试锁的一个位。Ticket locks将锁视为两个整数，一
+部分代表头，一部分代表尾。每个等待的CPU都从尾部分配到一个数（类似银行排号机），
+进入临界区的线程会增加头部的数值，等待的CPU对比头部的数值和自己排到的Ticket，
+决定自己是否应该进入临界区。
+NT的排队自旋锁方案不仅仅解决了排队的问题，还减轻了系统数据总线的传输负担。但
+这种方案也有它固有的问题，它只能用于内核本身。下一节的栈排队自旋锁弥补了这一
+问题。下面以获得排队自旋锁为例简单说明其原理：
+
+struct KSPIN_LOCK_QUEUE {PVOID Next, PVOID Lock};
+Next字段用于维护等待CPU组成的单链表。
+Lock字段用于指向全局的自旋锁，在忙等待的时候，Lock的最低两位起到锁的作用。
+
+处理器控制块(KPRCB)中若干个KSPIN_LOCK_QUEUE，它们代表不同的排队自旋锁，因此，
+获得锁的时候只需要传入锁在KPRCB中的索引即可。在内核初始化的时候，每个KPRCB中的
+锁的Lock字段都会指向一个全局的锁。这个锁的声明用__declspec(align(64))修饰，
+64字节正好是L1 cacheline的大小，因此每个全局锁都会独占一个L1 cacheline。全局锁
+和Lock字段类似，虽然类型是KSPIN_LOCK(ULONG_PTR)，但它高位用于指针，低位用于锁。
+
+Ke(Acquire|Release)QueuedSpinLock:
+
+在获得锁时，内核先根据索引在KPRCB中找到Lock，Lock指向全局锁。全局锁或为NULL，代
+表锁空闲，或指向最后一个等待的CPU。内核将全局锁指向当前CPU，循环测试Lock低位。
+在释放锁时，内核会根据Next找到下一个等待的CPU，并清空它的Lock字段低位。如果没有
+等待的CPU则释放全局锁。
+
++----+           +----+
+|Next|---------->|Next|
++----+           +----+
+|Lock|           |Lock|-+
++-+--+         +>+----+ |
+  |            |        |
+  |  +------+  |        |
+  +->|Globol|--+        |
+  +->+------+           |
+  +---------------------+
+
+
+2.3.栈排队自旋锁：
+
+
+排队自旋锁将锁分别放在了每个CPU的KPRCB中，这就使它只能在编译前静态使用。为了使
+第三方驱动也可以使用排队自旋锁，NT内核还提供了栈排队自旋锁。与排队锁原理类似，
+只不过，它使用的内核栈。一般而言，内核栈和内核线程控制块是与当前线程相对应并可
+方便使用的内存区域，而当前内核栈可以在运行时动态使用的，因此这种锁往往在内核栈
+中使用，这也是它名字的由来。
+从本质上看，Ke(Acquire|Release)InStackQueuedSpinLock只多了对KSPIN_LOCK_QUEUE的
+组装。栈锁需要KSPIN_LOCK_QUEUE和全局锁两个参数，KSPIN_LOCK_QUEUE是内核栈上，而
+SpinLock则是全局的。这里的Next和Lock需要在获得锁的时候初始化，Next为NULL，Lock
+指向全局的SpinLock。
+
+
+2.4.读写锁：
+
+
+有时锁应该根据请求者要求的不同而分开对待。生产者和消费者模型就是典型的例子，进
+入临界区的请求可以分为共享和独占两种，一般来说，读者可以共享，写者则需要独占。
+锁的最高位为写独占位，锁的其它位用于表示读者的个数。
+
+读者获得锁时：
+关抢占，判断锁最高位是否被占用。
+将锁的当前值值加一，用这个值原子的为锁加一。
+任何条件失败都会循环重新测试，直到成功。
+
+读者释放锁时：
+将锁值减一。
+开抢占。
+
+写者获得锁时：
+以读者身份请求锁。
+原子获得最高位，并等待读者全部退出。
+任何条件失败都要以读者身份释放锁，再试，直到成功。
+
+写者释放锁时：
+将锁值清零。
+开抢占。
+
+写者获得锁时要等待读者全部退出又要防止其它写者干扰，这就要求设置写占用位要使用
+cmpxchg指令，因此就需要先用读者身份获得一次当前锁的值。
+
+
+2.5.序列锁：
+
+
+Linux2.6中引入seqlock，一种改进的读写锁。不同的是读者不再等待，但应用场景有限。
+典型的应用如下：
+
+do {
+    seq = read_seqbegin(&foo);
+    ;
+    /*...*/
+    ;
+} while (read_seqretry(&foo, seq));
+
+锁的数据结构由两部分组成：
+struct {unsigned sequence spinlock_t lock};
+
+写者通过spin_lock同步，加锁和解锁都会增加sequence的值。这样，读者smp_rmb同步
+sequence的值，如果发现sequence的值为奇数，则说明有写者在临界区内工作，需要通过
+cpu_relax等待一会。本次循环结束之后还要通过read_seqretry看看是否有写者又修改了
+数据。seqlock还有一种简化版本，假定调用者自己处理锁，而读者和写者通过sequence
+判断同步。cpu_relax使用rep_nop插入忙等待指令，Pentium 4之后的CPU会把：
+volatile("rep; nop" ::: "memory");
+
+当成PAUSE指令，从而加快后面的指令运行并节省电源消耗。
+
+
+2.6.网络读写锁：
+
+
+网络读写锁是NT专门为网络驱动实现的高速读写锁。它不在NT内核中，而是在NDIS内核
+网络模块中。锁的数据结构如下：
+struct {
+  union {
+    KSPIN_LOCK  SpinLock;
+    UCHAR  Reserved[16];
+  };
+  union {
+    UINT  RefCount;
+    UCHAR  cacheLine[16];
+  } NDIS_RW_LOCK_REFCOUNT RefCount[MAXIMUM_PROCESSORS];
+} NDIS_RW_LOCK;
+
+SMP中，cache存在false sharing问题，性能敏感的数据应该按照cacheline的大小对齐
+放置，这样在不同的CPU cache就不会因为频繁更新而影响系统性能。cacheline size的
+大小为32或64字节。
+
+Ndis(Acquire|Release)ReadWriteLock的思想来源于排队锁，在写者等待读者退出时，
+写者不应该在以CPU号为索引的RefCount数组中查看每个CPU的状态。当每个CPU对应的
+RefCount项的RefCount都为0时，写者就可以认为读者全部退出，而进入临界区了。
+
+
+2.5.复制锁：
+
+
+当读写锁进化到RCU时，锁已经不能称作锁。RCU会复制写者修改过内容，并在适当的时候
+完成数据同步。这又是一种空间换时间的经典应用，占用内存似乎是它唯一的缺点。
+FIXME.RCU
+
+
+3.阻塞锁：
+
+
+4.综合锁：
+
+
+FIXME.快速互斥锁 受限互斥锁 资源锁 推锁

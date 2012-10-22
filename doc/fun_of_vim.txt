@@ -1,0 +1,499 @@
+文档名称：Vim之趣(Fun Of Vim)
+文档维护：Xuefeng Chang(welfear@gmail.com)
+文档创建：2010.7.25
+
+
+
+零、声明
+
+
+1.本文未完成，未来持续更新。
+2.本文内容源于互联网，全部经由作者整理而成。
+3.本文引用内容无法一一列出出处，望原作者们见谅。
+4.本文适用于工作在WindowsXP或Ubuntu9.04操作系统上的Vim7.2。
+
+
+
+一、理由
+
+
+1.Vim是流行的。世界上只有三类程序员：一种用Vim，一种用Emacs，其他的用其他。
+2.Vim不仅是开源软件，还是慈善软件。
+
+---
+
+周围同事不是用Vim就是Emacs, 你要是用一UltraEdit，你都不好意思跟人家打招呼。
+然而事实上，我遇到的都是用其他的其他程序员。
+
+Bram Moolenaar是Kibaale儿童中心（Kibaale Children's Centre 简称 KCC）的志愿者。
+Kibaale是乌干达南部的一个小镇，这是世界上受艾滋病影响最严重的地区。
+Bram Moolenaar呼吁Vim用户能够捐助那些需要帮助的乌干达儿童。
+
+
+
+二、历史
+
+
+1.Vim是Vi IMproved的缩写。
+2.Vim的原作者是Bram Moolenaar(1961,Netherlands,Google,Zimbu)。
+3.Vim发展之路(1988:1.0,1994:3.0,1996:4.0,1998:5.0,2001:6.0,2006:7.0,)。
+
+---
+
+Vi是Single Unix Specification 和 POSIX的标准程序。
+初始的Vi(Visual Interface)版本是由Bill Joy在1976年为BSD Unix而做。
+Vi来源于另一个行命令文本编辑器ex。它们的区别在于是否有用户界面。
+ex编辑器是ed编辑器的扩展，ed编辑器是Unix之父Ken Thompson编写的。
+ed引入了正则表达式，为Unix发展造成深远影响。那时使用Unix的用户都是通过
+传输速度慢的终端连接服务器的，所以ed行编辑器可以高效的操作文本。
+早期的Unix用户是通过TeleTYpes（电传打字机）操作计算机的，TTY面板主要由
+字母键组成并没有方向键，Vi因此被设计成模式编辑器。
+
+Bram Moolenaar在1991年在Stevie(vi)基础上为Amiga个人电脑开发了Vi IMitation。
+1992年移植到Unix之上，并取名为Vim。3.0支持多窗口，4.0支持图形界面，
+5.0支持语法高亮、修改BUG，6.0支持多语言和插件，7.0支持拼写检查、自动补齐。
+在功能不断增加之后Vi IMitation被改名为Vi IMproved。
+
+
+
+三、简介
+
+
+1.Vim可以兼容多种操作系统平台，一次投资终身受益。
+2.Viemu——在Visual Studio、Word、Outlook、SQL Server上模拟Vim。
+3.Vim是一种宗教信仰，使用者往往是专业的程序员或系统管理员。
+4.Vim是伟大的，商业产品是可用的，但不是最好的。
+5.Vim很容易获得(Ubuntu:apt-get install vim/vim-full)。
+6.Vim上手并不容易，但完全值得。
+
+---
+
+Vim不但兼容各种常见的操作系统，而且可以和各种命令行工具配合工作。
+Viemu是商业软件，破解版可以在网上获得（搜索关键字——CSDN）。
+
+
+
+四、开关
+
+
+1.打开、保存和退出文件。
+2.不保存所做编辑。
+3.配置文件。
+
+---
+
+Vim中每一个编辑对象都被叫做buffer，每一个被打开载入的文件都是一个buffer。
+[g]vim <file> || :e <file> || :r <file> 分别是打开、编辑和当前位置载入文件。
+:wq || :x || ZZ                         保存退出。
+r!<command>                             载入命令输出结果。
+:[<range>]w[!] <file>                   将<range>行写入<file>，!代表强制。
+:e! 放弃所做任何编辑。 :q! 放弃编辑并退出vi。:q[a] 退出（所有）编辑文件。
+
+打开两个或两个以上的文件后，Vim界面就会出现tabbar用于管理这些buffer。
+在文件间切换有三种方式：<A-<n>> || :b<n>|n|p || <C-w> <move>
+第一种是Alt键+数字键，这种方式是最方便的，然而如果你的SSH客户端（比如XShell）快捷键
+与此相冲突，这种方法就不能用了。
+第二种是用buffer命令，<n>代表buffer编号，n代表切换至下一个，p代表切换至上一个。
+第三中是利用多窗口原理，Tabbar也是buffer。按<C-w> w 跳至此buffer，
+在文件名上按回车可切换文件。<C-6>可以在最后两个文件间进行切换。
+
+在Windows上是_vimrc，而Linux上则是.vimrc，配置文件用于初始化VIM设置。
+vimrc文件由脚本和命令模式的命令组成。命令不再需要在命令前添加:。以设置文件行号为例，
+在配置文件中输入：      set nu[mber]
+在命令模式中输入：      :set nu[mber]
+在命令模式中取消行号：  :set nonu[mber]
+查看当前行号设置：      :set number?
+查看所有设置：          :set
+命令模式中的命令可以用<TAB>补全，=之后的<S-<TAB>>补全。
+
+本文中，[]括号中内容为可选的，<range>代表命令行模式中命令作用范围，<reg>代表寄存器，
+<n>代表数字，C-代表Ctrl、A-代表Alt。
+
+
+
+五、模式
+
+
+1.Vim主要有三种工作模式：正常模式、插入模式和命令模式。
+2.三种模式之间可以相互转化：
+
+a A i I o O  <C-[>|<ESC>    |  :         <CR>/<ESC>|<C-[>|  <C-o>            :start
+normal   -->  <--   insert  |  normal  --> <--  command  |  insert  --> <--  command
+
+---
+
+a 在光标之后进入插入模式。i 在光标之前进入插入模式。    gi 在上次编辑处进入插入模式。
+A 在行尾进入插入模式。    I 在行首非空白处进入插入模式。gI 在行首进入插入模式。
+o 当前行之上插入新行。    O 当前行之下插入新行。
+
+以上命令前可以输入数字表示命令重复次数，不输入的情况默认为1。
+
+
+
+六、移动
+
+
+1.按字符移动、按词移动、按行移动。
+2.按查找移动：行内查找移动、全文查找移动。
+3.按屏幕移动、按段移动。
+4.按书签位置移动。
+5.控制屏幕移动。
+
+---
+
+h、l、k、j 表示左右上下移动一个位置。
+
+[<n>=[1]] w|W           w 向后n次移动到词首；W 跨过标点向后n次移动到词首。
+[<n>=[1]] b|B           b 向前n次移动到词首；B 跨过标点向前n次移动到词首。
+[<n>=[1]] e|E           e 向后n次移动到词尾；E 跨过标点向后n次移动到词尾。
+
+[<n>=[1]] F|f <char>    行内向前查找字符<char>的第n次出现处；
+[<n>=[1]] T|t <char>    行内向后查找字符<char>的第n次出现处。
+; 重复上次查找命令；, 反方向重复上次命令。
+
+/ 从当前行向后查找；? 从当前行向后查找；[<n>=[1]] n|N （反向）查找下一个。
+通过设置:set ic 或 :set noic可以使查找过程不区分大小写或区分大小写。
+* 向下搜索当前关键字；# 向上搜索关键字；gd|D 跳至局部（全局）变量定义；gf 打开新文件。
+:nohlsearch|noh 用于去掉查找高亮。
+
+0   移动到行首； ^  移动行首非空白处； $     移动到行尾；  n|  移动到n列。
+gg  移动到首行； G  移动到末行；       <n>%  移动到文件的百分之n。
+<n> gg || <n> G || :<n>  移动到n行。
+
+H  移动到当前屏幕首行；  M  移动到当前屏幕中间行；  L  移动到当前屏幕末行。
+<C-f>  向下移动整屏幕文本；  <C-b>  向上移动整屏幕文本。
+%  移动到括号、方括号、括号。 ( || )  移动到上或下句；  { || }  移动到上或下段。
+
+m<mark>='[a-zA-Z]' || :mark <mark>='[a-zA-Z]' 标记当前行。a-z代表26个不同标记，
+                                              大写字母可以跨越文件。0~9系统自用。
+:marks || :delmarks! || :delm <mark>          分别是显示所有标记内容、删除所有标记
+                                              （不包括大写字母和数字）、删除标记。
+`|'<mark>='[a-zA-Z0~9]' || '' || '.           跳至标记处、跳至最后一次跳转处、
+                                              跳至最后修改处。<C-o>|<C-i>向前或向后跳。
+
+zz  将当前行置于屏幕中央； z<CR>  将当前行置于屏幕顶部； z-  将当前行置于屏幕底部。
+
+
+
+七、编辑
+
+
+0.可视选定。
+1.删除、删除后自动进入插入模式。
+2.替换、批量替换。
+3.粘贴、复制和寄存器。
+4.合并、格式化、缩进、宏。
+
+---
+
+<move>代表第四节中的移动操作。<move>操作前后可以得到选定区域，除此之外还可以
+通过进入可视模式进行选定。
+
+[g] v|V <move>{n}                   v用于按字符选择，V用于按行选择。g为上次选择区域。
+<C-v>|<C-q> <move>{n} <edit>        块选择后可编辑，或按I|A在块前|后插入新块。
+                                    Windows下由于<C-v>被占用，所以用<C-q>代替。
+
+[<n>=[1]] d <move>                  按<move>定位得到的范围删除内容。
+[<n>=[1]] dd || 0 [<n>=[1] d $      删除当前行开始的n行。
+[<n>=[1]] D || [<n>=[1]] d $        删除当前位置后的n行。
+[<n>=[1]] x|X || [<n>=[1]] d l|h    删除后n个或前n个字符。
+:[<range>]d                         从第n行开始删除。
+
+[<n>=[1]] c <move>                  按照<move>定位操作得到的范围替换内容。
+[<n>=[1]] cc|S || 0 [<n>=[1]] c $   替换当前行开始的n行；
+[<n>=[1]] C || [<n>=[1]] c $        替换当前位置后的n行。
+[<n>=[1]] s || [<n>=[1]] cl         替换当前n个字符。
+:[<range>]c                         从第n行开始替换。
+
+
+[<n>=[1]] [g] r|R                   以n个相同字符串替换n个字符串，按<ESC>键结束
+                                    字符串输入完成替换。g表示<TAB>键不影响布局。
+
+:[<range>]s/<pattern>/<str>/[g|c]   在<range>范围内替换<pattern>为<str>，g代表
+                                    替换每行所有匹配点，c代表替换前需要确认。
+:%s/\t/    /g                       将文件内的<tab>替换为4个空格。
+:%s/\s\+$//                         去掉行尾多余空格。
+
+
+[<n>=[1]] y <move>                  复制<move>选定区域内容。
+[<n>=[1]] yy|Y || 0 [<n>=[1]] y $   复制当前行开始的n行。
+[<n>=[1]] p|P                       粘贴默认寄存器中的内容，P表示在光标前粘贴。
+
+
+[<n>=[1]] [g] J                     合并n行，g表示合并后各行间不留空格。
+= || ==                             格式化代码，按行格式化代码。
+~                                   大小写转换。
+.                                   重复上次编辑操作。
+u || <C-r> || U                     撤销、撤销撤销、撤销整行的修改。
+!FIXME!:                            代码缩进。
+
+q <reg>='[a-zA-Z0~9]' ... q         <reg>代表寄存器，它可以是数字或字母，大写
+                                    字母代表追加记录。按q表示结束记录，编辑指令
+!FIXME!: How to delete macro        都会放入相应编号的寄存器中。
+[<n>=[1]] @ <reg>                   重放相应寄存器中保存的编辑指令。
+:dis                                显示所有寄存器内容。
+let @<reg> = "..."                  在配置文件中预定义宏命令，在正常模式下用@<reg>
+                                    即可使用。
+
+
+N.B. [<n>=[1]] c w|W和[<n>=[1]] c e|E是等效的，都是[<n>=[1]] c e|E的语义，
+但奇怪的是[<n>=[1]] c e|E的用法并不存在于用户手册中，用户手册中记录了
+[<n>=[1]] c w|W，而实际上它的效果就是[<n>=[1]] c e|E。
+
+N.B. 当前光标指示的字符作用在字符的最左边，也就是说操作文本的时候应该尽量
+从左向右操作，否则操作对原来光标处的字符不起作用。
+
+N.B> <range> 由<n>=[1][,|;[<n>]]、特殊符号、命令几种表示方法。比如：1,3、%、/gg。
+对于命令行模式中的<range>来说，0代表第一行，.代表当前行，$代表最后一行，%代表整个文件。
+命令行内可以使用算术表达式，例如：:.,+4d。!FIXME!: <range>:g.
+
+N.B. 删除和复制会改变缓冲区内容，而替换不会。
+
+!FIXME!: N.B. 寄存器 +y
+
+
+
+八、其他
+
+
+1. <C-v|q> [u] <n>              Vim有类似Bash的输入特殊字符功能。在插入模式或命令模式下输入
+                                <n>当前字符集所对应的字符。u代表<n>为16进制，默认<n>为10进制。
+   <C-v|q> 控制键               在插入模式或命令模式下输入控制键对应字符。
+                                控制键可由带Ctrl的字母键替代。
+2. set fileencoding=utf8        设置文件编码为UTF-8，encoding代表Vim内部编码，
+                                termencoding代表终端显示编码。
+                                N.B. 不要在有用的文档上测试文件编码参数，
+                                本文差点步《国榷》后尘，而我没有谈迁那么纯爷们儿。
+3. :ab <ab.> <origin>           设置缩写后，键入的缩写会自动替换为原内容。
+                                :abc 清除所有缩写设置。
+4. set autochdir                设置自动转换工作目录。
+5. set fileformat=dos|unix|mac  设置文件格式为DOS、UNIX或MAC。回车<CR>(14)和换行<LF>(10)
+                                是两个字符，回车是回到行首之意，换行是下移一行之意。
+                                微软遵守标准用<CR><LF>表示行结束，MAC用<CR>，UNIX用<LF>。
+6. set guifont=fixdays          设置字体。
+7. set autoindent|ai            设置自动缩进或C语言自动缩进。
+   set cindent
+8. set incsearch                设置为递进搜索（边输入边搜索）。
+9. set nobackup                 不需要备份文件。
+   set nowritebackup            不要写备份文件。
+   set noswapfile               不生成*~交换文件。
+   set autowrite                切换未保存缓冲区时自动保存。
+   set hidden                   允许切换未保存缓冲区。
+10.set statusline=[%F]%y%r%m%*%=[Line:%l/%L,Column:%c/%v][%p%%]
+   set laststatus=2             总是显示状态栏。显示文件名、行数和列数以及百分比。
+   set ruler                    总是在右下角显示鼠标状态。
+   set wildmenu                 设置后，命令补全时，在状态栏会出现可选项。
+11.set list                     有洁癖的注意了！以点和空格显示<TAB>，以点显示结尾多余空格。
+   set listchars=tab:.\ ,trail:.
+12.syntax on                    开启语法高亮
+13.colorscheme darkblue         配色方案，我喜欢蓝黑的。
+14.set novisualbell             不闪。
+   set noerrorbells             不吵。
+   set vb t_vb=                 真别吵。
+15.set backspace=2              退格键可用。
+16.set report=0                 :command运行后，报告运行信息。
+17.:sp <file> || :vs <file>     横向或纵向打开新窗口。
+   <C-w> s || <C-w> v           用当前文件横向或纵向打开新窗口。
+   <C-w> <C-w> || <C-w> h|j|k|l 切换窗口。:q || :bd可以关闭窗口。!FIXME!: 现在这些足够了。
+18.:set tw=<n> || :set nowrap   tw用于设置超过<n>行后自动换行，并只适用于文本文件。已有文本
+                                需选定用gq命令格式化。nowrap用于设置是否自动折行。
+19.:set cul || :set nocul       突出当前行。光标的形状可以通过终端设置修改。例如，GNOME终端
+                                可以支持Underline、I-Beam、Block三种光标形状。
+20.<C-a> || <C-x>               为光标下的数字加一或减一。
+20.tips: !FIXME! :g/^\s*$/d
+
+
+
+九、编程
+
+
+1.使用ctags产生的tags文件。
+2.设置<TAB>和空格。
+3.编辑二进制文件。
+4.各种各样的补全和提示。
+5.编译工程。
+
+---
+
+安装ctags：     Ubuntu:apt-get install ctags，Windows:ctags.sourceforge.net
+生成tags文件：  ctags -R --c++-kinds=+p --fields=+iaS --extra=+q ||
+                make tags (for example:Linux Kernel)
+设置tags路径：  :set tags+=./tags,../tags,path;
+正常模式下：    <C-]> 从光标处的标识符跳转到其定义处，<C-t> 跳回。
+                g<C-]> 列出所有定义（有多个时）或跳转，:ts 只列出定义不跳转。
+
+设置<TAB>长度：         :set tabstop|ts = 8
+设置自动缩进长度：      :set shiftwidth|sw = 8;
+用空格替换<TAB>：       :set expandtab
+!FIXME!: softtabstop
+
+查看二进制文件：        xxd bin_file || vim -b bin_file
+修改二进制文件：        :%!xxd
+保存修改：              :%!xxd -r
+
+Vim在编辑二进制文件时，需要和xxd命令配合使用。Vim自带xxd，使用起来类似UltraEdit。
+%!xxd %表示将xxd的标准输入和标准输出重定向到当前文件全部内容，!表示执行xxd命令。
+xxd -r 表示将文本转换为二进制文件。
+
+自动补齐功能插入模式下通过键入快捷键实现的：
+
+<C-x> <C-p>             向前局部补全。
+<C-x> <C-n>             向后局部补全。
+<C-x> <C-f>             文件名补全。
+<C-x> <C-l>             补全行。
+<C-x> <C-i>             从当前文件和头文件补全。
+<C-x> <C-k>             通过字典文件查询，Ubuntu用户可以用：
+                        apt-get install wamerican-huge命令获得字典库，
+                        并设置字典路径：:set dictionary+=/usr/share/dict/words。
+<C-x> <C-o>             全能补全，需要设置tags文件和omnifunc参数。
+
+K                       查看光标所在单词的帮助文档。在Linux下，相当于!man <keyword>。
+                        在Windows下，相当于查看Vim自带帮助。通过设置keywordprg的值
+                        改变默认的帮助程序。当keywordprg为空或为":help"时，使用Vim帮助查询。
+
+nmap <F5> :make <CR>    将<F5>和Vim内置的:make命令绑定，按<F5>运行make。编译时的输出
+nmap <F6> :cw<CR>       信息会在Quickfix窗口中显示。:cw 打开Quickfix，:cp || :cn 向下或向上
+nmap <F7> :cp<CR>       移动，并定位源代码行。最后用nmap命令将它们和<F6>、<F7>和<F8>绑定。
+nmap <F8> :cn<CR>       !FIXME!: MAP。
+
+
+
+十、插件
+
+
+1.Plugin:Vim Script(from vim.org)
+2.Omnicppcomplete.vim
+3.Taglist.vim
+4.Grep.vim
+5.DrawIt.vim
+6.Other
+
+---
+
+Vim内置OMMI全能补全功能，但Omnicppcomplete.vim插件更好的支持C++，并支持类和结构体
+成员的补全。只需按-> 或 .即可提示补全内容。下面内容复制到vimrc中完成配置（"为注释）：
+
+set nocp                                "关闭VI兼容模式
+filetype plugin indent on               "打开文件类型检测，不同源代码补全函数不同
+set completeopt=longest,menu            "补全时不显示预览窗口
+let OmniCpp_GlobalScopeSearch = 1
+let OmniCpp_NamespaceSearch = 1
+let OmniCpp_DisplayMode = 1
+let OmniCpp_ShowScopeInAbbr = 0
+let OmniCpp_ShowPrototypeInAbbr = 1
+let OmniCpp_ShowAccess = 1
+let OmniCpp_MayCompleteDot = 1
+let OmniCpp_MayCompleteArrow = 1
+let OmniCpp_MayCompleteScope = 1
+
+
+Taglist.vim借助ctags生成的tags文件组织成标识符列表。配置内容如下：
+
+let Tlist_Sort_Type='name'
+"let Tlist_Ctags_Cmd='ctags.exe'     "for windows not system path
+"let Tlist_Exit_OnlyWindow=1
+"let Tlist_Show_Menu=1
+"let Tlist_Max_Submenu_Items=10
+"let Tlist_Max_Tag_length=40
+"let Tlist_Use_SingleClick=1
+"let Tlist_Auto_Open=0
+"let Tlist_Close_On_Select=0
+"let Tlist_GainFocus_On_ToggleOpen=0
+"let Tlist_Process_File_Always=1
+"let Tlist_WinHeight=10
+"let Tlist_WinWidth=30
+"let Tlist_Use_Horiz_Window=0
+nnoremap <silent> <F4> :Tlist<CR>
+
+
+Grep.vim使用系统Grep程序，并将搜索结果输入到Vim的Quickfix窗口，替代Vim内置的Grep。
+Windows下，Grep程序需要从http://gnuwin32.sourceforge.net/packages/grep.htm下载，
+放到系统文件夹里，配置内容如下：
+
+nnoremap <silent> <F3> :Grep<CR>
+
+
+DrawIt.vim用于方便地画出字符图。安装后可在正常模式下用\di和\ds启动和关闭DrawIt插件。
+nmap <F9>  \di
+nmap <F10> \ds
+开启DrawIt插件后并不影响原有Vim功能，但有几个按键的含义发生了变化。
+<、>、^、v和\<、\>、\^、\v用于画对应方向的箭头，<pgup>、<pgdn>、<home>、<end>用于画斜线，
+用这四个键配合可以画出菱形。按方向键可画线，按空格键可以开启或关闭擦除模式。
+DrawIt支持用鼠标选定画图区域或用<C-v>提供的块操作选定画图区域，选定区域后按\b画矩形。
+画好矩形或菱形后，按R进入替换模式直接编辑图形内的空白处。用鼠标左键选定和d|p命令可以实现
+图形的整体移动。
+
++-----------------------+                 X
+|                       |                / \
+|                       |               /   \
+|   welfear@gmail.com   |<-------------X  O  X
+|                       |               \   /
+|                       |                \ /
++-----------------------+                 X
+
+
+
+其他插件：
+
+The NEAD Commenter:             方便的添加各种语言的注释。
+Buffer Explorer:                多文件管理插件。
+Winmanager:                     多窗口管理插件。
+C.vim:                          为C/C++程序员提供的编程插件，功能应有尽有。
+CRefVim:                        C函数库查询插件。
+echofunc:                       自动显示函数参数插件。
+
+
+
+参考资源和进阶材料：
+
+
+自带教程：
+:!vimtutor
+
+自带帮助系统：
+:h 42 or :h!
+
+在线的中文帮助：
+http://vimcdoc.sourceforge.net/doc
+
+Bram Moolenaar个人主页：
+http://www.moolenaar.net
+
+官方站点：
+http://www.vim.org
+
+wikipedia：
+http://en.wikipedia.org/wiki/Vim_(text_editor)
+
+Bram Moolenaar专访：
+http://article.yeeyan.org/view/joshyu/423?from_com
+
+提升编辑能力的10个VIM指南：
+http://article.yeeyan.org/view/144994/99257
+
+Effective Vim：
+fsa.ia.ac.cn/files/Effective_Vim.ppt
+
+《Learning the vi and Vim Editors》：
+http://www.amazon.com/
+Learning-Vim-Editors-Arnold-Robbins/dp/059652983X/
+ref=sr_1_1?ie=UTF8&s=books&qid=1280046779&sr=1-1
+
+《Hacking Vim》：
+http://www.amazon.com/
+Hacking-Vim-personalizing-productivity-optimizations/dp/1847190936
+
+《Vi IMproved(VIM)》：
+http://www.amazon.com/Vi-iMproved-VIM-Steve-Oualline/dp/0735710015
+
+《Vim 实用技术》：
+http://wyw.dcweb.cn/download.asp?path=vim&file=VimArticle.pdf
+
+《Best of Vim Tips》：
+http://www.rayninfo.co.uk/vimtips.html
+
+ed编辑器的笑话：
+http://www.gnu.org/fun/jokes/ed.msg.html
+
+Vim模拟器：
+http://www.viemu.com/

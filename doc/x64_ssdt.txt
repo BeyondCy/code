@@ -1,0 +1,216 @@
+x64 Vista SSDT Address
+Xuefeng Chang(welfear@gmail.com)
+2009
+
+Windows Vista x64版本相比于以前版本使用了不同的数据结构和不同的地址。
+
+根据在ReactOS中找到的KTHREAD信息中，包含了SSDT表的信息。
+
+SSDT in KTHREAD
+typedef struct _KTHREAD {
+    DISPATCHER_HEADER Header;
+    LIST_ENTRY MutantListHead;
+    PVOID InitialStack;
+    PVOID StackLimit;
+#if defined(_IA64_)
+    PVOID InitialBStore;
+    PVOID BStoreLimit;
+#endif
+    PVOID Teb;
+    PVOID TlsArray;
+    PVOID KernelStack;
+#if defined(_IA64_)
+    PVOID KernelBStore;
+#endif
+    BOOLEAN DebugActive;
+    UCHAR State;
+    BOOLEAN Alerted[MaximumMode];
+    UCHAR Iopl;
+    UCHAR NpxState;
+    CHAR Saturation;
+    SCHAR Priority;
+    KAPC_STATE ApcState;
+    ULONG ContextSwitches;
+    LONG_PTR WaitStatus;
+    KIRQL WaitIrql;
+    KPROCESSOR_MODE WaitMode;
+    BOOLEAN WaitNext;
+    UCHAR WaitReason;
+    PRKWAIT_BLOCK WaitBlockList;
+    LIST_ENTRY WaitListEntry;
+    ULONG WaitTime;
+    SCHAR BasePriority;
+    UCHAR DecrementCount;
+    SCHAR PriorityDecrement;
+    SCHAR Quantum;
+    KWAIT_BLOCK WaitBlock[THREAD_WAIT_OBJECTS + 1];
+    PVOID LegoData;
+    ULONG KernelApcDisable;
+    KAFFINITY UserAffinity;
+    BOOLEAN SystemAffinityActive;
+    UCHAR PowerState;
+    UCHAR NpxIrql;
+    UCHAR Pad[1];
+    PVOID ServiceTable;
+    ......
+} KTHREAD, *PKTHREAD;
+
+使用KeGetCurrentThread()就可以得到这个结构。
+但在Vista x64中ServiceTable字段已经被去掉了，并且KeSystemSeriveTable也没有导出。
+要使用SSDT表就要找到新的获得地址方法。
+
+以下实验数据在build number 6001的Vista SP1中得到。
+在使用becedit /debug on来开启本地调试模式，并载入正确的符号表。
+
+windows仍然使用ntdll.dll来切换CPL3到CPL0，Vista使用SYSCALL指令完成切换。
+根据Intel instructions hoodbook中的解释：
+SYSCALL:Fast System Call
+SYSRET: Return From Fast System Call
+
+SYSCALL保存RIP的值到RCX中，并载入新的RIP值：IA32_LSTAR。
+
+lkd> u ntdll!NtCreateFile
+ntdll!NtCreateFile:
+00000000`772b5fc0 4c8bd1          mov     r10,rcx ；NtXXXXX
+00000000`772b5fc3 b852000000      mov     eax,52h ; FunctionIndex
+00000000`772b5fc8 0f05            syscall
+00000000`772b5fca c3              ret
+
+在KiInitializeBootStructures中：
+
+lea rax, KiSystemCall32
+mov ecx, 0C0000083 ;CSTAR
+mov rdx, rax
+shr rdx, 20
+wrmsr
+
+lea rax, KiSystemCall64
+mov ecx, 0C0000082 ;LSTAR
+mov rdx, rax
+shr rdx, 20
+wrmsr
+
+所以在Windbg中使用rdmsr命令直接看C0000082寄存器的值：
+lkd> rdmsr C0000082
+msr[c0000082] = fffff800`018b8c00
+lkd> ln fffff800`018b8c00
+(fffff800`018b8c00)   nt!KiSystemCall64   |  (fffff800`018b8cbe)   nt!KiSystemServiceStart
+Exact matches:
+    nt!KiSystemCall64 = <no type information
+
+返回的值正是KiSystemCall64。
+反汇编此函数发现它确实和Vista之前的版本不一样，以前是使用当前线程的KTHREAD中查找SSDT值，而现在是直接使用。
+
+lkd> uf fffff800`018b8c00
+Flow analysis was incomplete, some code may be missing
+nt!KiSystemCall64:
+fffff800`018b8c00 0f01f8                swapgs
+fffff800`018b8c03 654889242510000000    mov   qword ptr gs:[10h],rsp
+fffff800`018b8c0c 65488b2425a8010000    mov   rsp,qword ptr gs:[1A8h]
+fffff800`018b8c15 6a2b                  push    2Bh
+fffff800`018b8c17 65ff342510000000      push    qword ptr gs:[10h]
+fffff800`018b8c1f 4153                  push    r11
+fffff800`018b8c21 6a33                  push    33h
+fffff800`018b8c23 51                    push    rcx
+fffff800`018b8c24 498bca                mov     rcx,r10
+fffff800`018b8c27 4883ec08              sub     rsp,8
+fffff800`018b8c2b 55                    push    rbp
+fffff800`018b8c2c 4881ec58010000        sub     rsp,158h
+fffff800`018b8c33 488dac2480000000      lea     rbp,[rsp+80h]
+fffff800`018b8c3b 48899dc0000000        mov     qword ptr [rbp+0C0h],rbx
+fffff800`018b8c42 4889bdc8000000        mov     qword ptr [rbp+0C8h],rdi
+fffff800`018b8c49 4889b5d0000000        mov     qword ptr [rbp+0D0h],rsi
+fffff800`018b8c50 c645ab02              mov     byte ptr [rbp-55h],2
+fffff800`018b8c54 65488b1c2588010000    mov   rbx,qword ptr gs:[188h]
+fffff800`018b8c5d 0f0d8bc8010000        prefetchw [rbx+1C8h]
+fffff800`018b8c64 0fae5dac              stmxcsr dword ptr [rbp-54h]
+fffff800`018b8c68 650fae142580010000    ldmxcsr dword ptr gs:[180h]
+fffff800`018b8c71 807b0300              cmp     byte ptr [rbx+3],0
+fffff800`018b8c75 66c785800000000000    mov   word ptr [rbp+80h],0
+fffff800`018b8c7e 7430                  je      nt!KiSystemCall64+0xb0 (fffff800`018b8cb0)
+fffff800`018b8c80 488945b0              mov     qword ptr [rbp-50h],rax
+fffff800`018b8c84 48894db8              mov     qword ptr [rbp-48h],rcx
+fffff800`018b8c88 488955c0              mov     qword ptr [rbp-40h],rdx
+fffff800`018b8c8c 4c8945c8              mov     qword ptr [rbp-38h],r8
+fffff800`018b8c90 4c894dd0              mov     qword ptr [rbp-30h],r9
+fffff800`018b8c94 e8770b0000            call    nt!KiSaveDebugRegisterState (fffff800`018b9810)
+fffff800`018b8c99 488b45b0              mov     rax,qword ptr [rbp-50h]
+fffff800`018b8c9d 488b4db8              mov     rcx,qword ptr [rbp-48h]
+fffff800`018b8ca1 488b55c0              mov     rdx,qword ptr [rbp-40h]
+fffff800`018b8ca5 4c8b45c8              mov     r8,qword ptr [rbp-38h]
+fffff800`018b8ca9 4c8b4dd0              mov     r9,qword ptr [rbp-30h]
+fffff800`018b8cad 666690                xchg    ax,ax
+fffff800`018b8cb0 fb                    sti
+fffff800`018b8cb1 48898bd0010000        mov     qword ptr [rbx+1D0h],rcx
+fffff800`018b8cb8 8983e8010000          mov     dword ptr [rbx+1E8h],eax
+fffff800`018b8cbe 4889a3c8010000        mov     qword ptr [rbx+1C8h],rsp
+fffff800`018b8cc5 8bf8                  mov     edi,eax
+fffff800`018b8cc7 c1ef07                shr     edi,7
+fffff800`018b8cca 83e720                and     edi,20h
+fffff800`018b8ccd 25ff0f0000            and     eax,0FFFh
+fffff800`018b8cd2 4c8d15a74c1d00        lea     r10,[nt!KeServiceDescriptorTable (fffff800`01a8d980)]
+fffff800`018b8cd9 4c8d1de04c1d00        lea     r11,[nt!KeServiceDescriptorTableShadow (fffff800`01a8d9c0)]
+fffff800`018b8ce0 f783f400000000010000  test dword ptr [rbx+0F4h],100h
+fffff800`018b8cea 4d0f45d3              cmovne  r10,r11
+fffff800`018b8cee 423b441710            cmp     eax,dword ptr [rdi+r10+10h]
+fffff800`018b8cf3 0f83ad020000          jae     nt!KiSystemServiceExit+0x16b (fffff800`018b8fa6)
+
+这个函数直接使用汇编写成，所以改动的可能性不大。
+从018b8c00到018b8cFF搜索就可以找到KeServiceDescriptorTable的值。
+f783f400000000010000和4c8d15a74c1d00、4c8d1de04c1d00都可以作为搜索特征定位。
+
+下面就要从汇编指令中提取地址信息。
+lkd> dd fffff800018b8cd2
+fffff800`018b8cd2  a7158d4c 4c001d4c 4ce01d8d 83f7001d
+fffff800`018b8ce2  000000f4 00000100 d3450f4d 17443b42
+fffff800`018b8cf2  ad830f10 4e000002 4d17148b 49821c63
+fffff800`018b8d02  c149c38b 034d04fb 20ff83d3 8b4c5075
+fffff800`018b8d12  0000b09b bb834100 00001740 483f7400
+fffff800`018b8d22  48b04589 48b84d89 49c05589 8b49d88b
+fffff800`018b8d32  f28b49f9 4b3415ff 8b48001d 8b48b045
+fffff800`018b8d42  8b48b84d 8b4cc055 cf8b4cc3 66d68b4c
+
+01a8d980 - 018b8cd2 = 1D4CAE a74c1d00
+01a8d9c0 - 018b8cd9 = 1D4CE7 e04c1d00
+
+通过观察汇编指令4c8d15a74c1d00中数据与目标地址的关系可以得到下面的算法：
+
+PDWORD  pdwFindCodeAddress = (PBYTE)018b8cd2;
+PVOID   pTable = NULL;
+pTable = (ULONG_PTR)pdwFindCodeAddress + (ULONG_PTR)((((*(pdwFindCodeAddress + 1)) & 0xFFFF) << 8) + ((*pdwFindCodeAddress) >> 24 + 7));
+
+pTable就是我们要找的SSDT表地址。SSDT表项也有原来的32位变成64位。
+
+#include <ntddk.h>
+#include <windef.h>
+
+EXTERN_C
+__int64 __readmsr(int);
+
+#pragma intrinsic(__readmsr)
+
+#define SEARCH_RANGE 0xFF
+
+ULONG_PTR
+GetSSDTAddressAtVista64(
+    VOID
+    )
+{
+    PUCHAR      pucStartSearchAddress   = (PUCHAR)__readmsr(0xC0000082);
+    PUCHAR      pucEndSearchAddress     = pucStartSearchAddress + SEARCH_RANGE;
+    PDWORD      pdwFindCodeAddress      = NULL;
+    ULONG_PTR   SSDT = 0;
+
+    for (; pucStartSearchAddress < pucEndSearchAddress; pucStartSearchAddress++) 
+    {
+        if ((*(PDWORD)pucStartSearchAddress & 0xFFFFFF00) == 0x83f70000) 
+        {
+            pdwFindCodeAddress = (PDWORD)(pdwStartSearchAddress - 12);
+            SSDT = (ULONG_PTR)pdwFindCodeAddress +
+                    (((*(PDWORD)pdwFindCodeAddress) >> 24) + 7) + //ae
+                    (ULONG_PTR)(((*(PDWORD)(pdwFindCodeAddress + 1)) & 0xFFFF) << 8); //id4c
+            break;
+        }
+    }
+    return SSDT;
+}

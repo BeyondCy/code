@@ -1,0 +1,136 @@
+2012.4.18收到dump文件之后，启动Windbg查看崩溃前的进程状态：
+0:000> !analyze -v
+FAULTING_IP:
+ntdll!RtlpWaitOnCriticalSection+bd
+76f1224d ff4014          inc     dword ptr [eax+14h]
+EXCEPTION_RECORD:  ffffffff -- (.exr 0xffffffffffffffff)
+ExceptionAddress: 76f1224d (ntdll!RtlpWaitOnCriticalSection+0x000000bd)
+   ExceptionCode: c0000005 (Access violation)
+  ExceptionFlags: 00000000
+NumberParameters: 2
+   Parameter[0]: 00000001
+   Parameter[1]: 00000014
+Attempt to write to address 00000014
+ERROR_CODE: (NTSTATUS) 0xc0000005 - "0x%08lx"
+EXCEPTION_CODE: (NTSTATUS) 0xc0000005 - "0x%08lx"
+WRITE_ADDRESS:  00000014 
+FOLLOWUP_IP: 
+TPlayer+ae04
+0124ae04 ??              ???
+0031d088 76f1215c 00000000 00000000 0a680490 ntdll!RtlpWaitOnCriticalSection+0xbd
+0031d0b0 0124ae04 0a680504 99a17a4b 0122d388 ntdll!RtlEnterCriticalSection+0x150
+WARNING: Stack unwind information not available. Following frames may be wrong.
+0031d1f4 012b0e77 00f2cb20 012af153 5e520860 TPlayer+0xae04
+0031d258 012afebe 0031d35c 0031f4a4 003a05ac TPlayer+0x70e77
+0031d2b4 012a1ca4 0031f4a4 00000000 00000000 TPlayer+0x6febe
+0031d2f0 5dc6c14b 03bc05b0 028bf662 0031d5a4 TPlayer+0x61ca4
+0031d37c 75eeeb4d 75fe6ffc 00000007 0031d4fc QtGui4+0x7c14b
+STACK_COMMAND:  .cxr 00000000 ; kb ; ~0s; .ecxr ; kb
+
+release版没有生成pdb调试信息文件，因此工具分析出的线索十分有限，但能看出一些：
+1.崩溃发生在程序进入临界区时。
+2.崩溃原因是写异常访问，写地址是0x14。
+3.引起崩溃的指令是inc dword ptr [eax + 14h]。
+4.QtGui4触发。
+
+很明显，2和3可以得到eax为0的结论，那么eax保存了什么？先来了解一下临界区，在WinNT.h中：
+typedef struct _RTL_CRITICAL_SECTION {
+    PRTL_CRITICAL_SECTION_DEBUG DebugInfo;
+    LONG LockCount;
+    LONG RecursionCount;
+    HANDLE OwningThread;
+    HANDLE LockSemaphore;
+    ULONG_PTR SpinCount;
+} RTL_CRITICAL_SECTION, *PRTL_CRITICAL_SECTION;
+偏移为14h的正是SpinCount，那么对SpinCount加1正是为了增加等待计数，eax则是临界锁的首地址。
+那么问题代码在哪？虽然当前上下文未必是造成问题的直接原因但至少也是相关的，所以应该从当前
+栈下手。在IDA中找Player+0xae04,Player+0x70e77,Player+0x6febe,Player+0x61ca4：
+
+00461C5E call    ds:?toString@QTime@@QBE?AVQString@@ABV2@@Z ; QTime::toString(QString const &)
+00461C64 push    eax
+00461C65 lea     ecx, [esi+0E8h]
+00461C6B mov     byte ptr [ebp-4], 2
+00461C6F call    ds:??4QString@@QAEAAV0@ABV0@@Z ; QString::operator=(QString const &)
+00461C75 lea     ecx, [ebp-10h]
+00461C78 mov     byte ptr [ebp-4], 1
+00461C7C call    ds:??1QString@@QAE@XZ ; QString::~QString(void)
+00461C82 lea     ecx, [ebp+8]
+00461C85 mov     dword ptr [ebp-4], 0FFFFFFFFh
+00461C8C call    ds:??1QString@@QAE@XZ ; QString::~QString(void)
+00461C92 mov     ecx, esi
+00461C94 call    sub_459B80
+00461C99 lea     ecx, [esi+21Ch]
+00461C9F call    sub_46FD10
+00461CA4 call    sub_459D10
+00461CA9 mov     ecx, eax
+
+由Timer触发
+
+0046FEAD call    ds:?itemWidget@QTreeWidget@@QBEPAVQWidget@@PAVQTreeWidgetItem@@H@Z
+0046FEB3 test    eax, eax
+0046FEB5 jz      short loc_46FF09
+0046FEB7 mov     ecx, eax
+0046FEB9 call    sub_46EFC0
+0046FEBE jmp     short loc_46FF09
+0046FEC0 cmp     esi, 2
+0046FEC3 jnz     short loc_46FF09
+0046FEC5 mov     ecx, ebx
+0046FEC7 call    ds:?isExpanded@QTreeWidgetItem@@QBE_NXZ
+
+在isExpanded调用之前
+
+00470E60 push    esi
+00470E61 mov     esi, ecx
+00470E63 cmp     dword ptr [esi+0Ch], 1
+00470E67 jnz     short loc_470E87
+00470E69 mov     ecx, [esi+20h]
+00470E6C test    ecx, ecx
+00470E6E jz      short loc_470E87
+00470E70 mov     eax, [ecx]
+00470E72 mov     edx, [eax+20h]
+00470E75 call    edx
+00470E77 test    edx, edx
+00470E79 jl      short loc_470E87
+00470E7B jg      short loc_470E81
+00470E7D test    eax, eax
+00470E7F jz      short loc_470E87
+
+call edx应该是调用虚函数
+
+0040ADED push    eax
+0040ADEE mov     [esp+138h+var_124], offset off_AD362C
+0040ADF6 mov     [esp+138h+var_11C], edi
+0040ADFA mov     [esp+138h+var_120], esi
+0040ADFE call    ds:__imp_EnterCriticalSection
+0040AE04 mov     [esp+134h+var_4], 0
+0040AE0F cmp     dword ptr [ebx+8Ch], 0
+0040AE16 jnz     short loc_40AE37
+0040AE18 mov     [esp+134h+var_4], 0FFFFFFFFh
+0040AE23 test    esi, esi
+0040AE25 jz      short loc_40AE91
+
+进入临界区
+
+由以上信息不难分析出相关代码的位置，在出现：
+WARNING: Stack unwind information not available.
+Following frames may be wrong.
+时，Windbg会猜测出可能的栈位置，可能会出现错误，本例中缺少
+了一次函数调用，但这并不影响分析。最后原因是多线程访问出现
+竞争条件。
+
+如何得到dump文件：
+
+在程序启动时用SetUnhandledExceptionFilter设置未捕获异常的回调，
+在回调函数中用MiniDumpWriteDump生成dump文件，但要注意参数，只有
+MiniDumpNormal | MiniDumpWithDataSegs
+
+是兼容的，其它参数
+
+MiniDumpWithPrivateReadWriteMemory        |
+MiniDumpWithDataSegs                      |
+MiniDumpWithHandleData                    |
+MiniDumpWithFullMemoryInfo                |
+MiniDumpWithThreadInfo                    |
+MiniDumpWithUnloadedModules
+
+只在高版本系统中有效，不能识别的参数会影响dump文件的生成。

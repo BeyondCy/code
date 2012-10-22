@@ -1,0 +1,225 @@
+文档名称：Forbid Setting Windows NT IP Address
+文档维护：Xuefeng Chang(welfear@gmail.com)
+创建时间：2008年6月19日
+
+
+
+目录
+
+0 背景
+
+1 分析
+
+2 方法
+
+3 结论
+
+
+0 背景
+
+Windows NT中的IP地址操作一直是个秘密。MSDN上的API只能操作动态IP，但是却不能操作主IP。
+VCKbase上有文章论述如何调用未公开的API来实现操作主IP的功能。不过本文的目的并不在于此，
+研究这方面的技术细节是为了在我们的产品中加入防止用户自己随意改变IP的功能。实现此功能
+可以加强我们产品的运行基础，然而以前的实现并不是很好:-)。
+
+
+1 分析
+
+通过观察在改变改动系统IP的时候，tcpip.sys经过了哪些命令码可以找到些蛛丝马迹。无论
+用户通过什么方式改动系统IP最后都要到tcpip.sys里设置。tcpip.sys创建的\device\tcp用来接收
+这些命令。我们发现有如下命令码：
+
+0x00120003
+0x00128004
+0x0012801c
+0x00128020
+0x00120028
+0x00120040
+0x0012006c
+0x00120090
+
+当然，上面的顺序是经过排列的。下面介绍为什么这么排列。这些命令码其实就是DeviceIoControl中的
+第二个参数dwIoControlCode。它是通过下面的宏得到的：
+
+#define CTL_CODE( DeviceType, Function, Method, Access ) ( \
+((DeviceType) << 16) | ((Access) << 14) | ((Function) << 2) | (Method) \
+)
+
+哦，好。它们的高16位都一样是0x0012，也就是DeviceType。0x0012是网络设备的意思。
+它后面是Access，访问权限的意思，我们忽略它。最低两位是Method，关系也不大，也忽略。
+现在我们要计算出关键的部分：Function的值。
+经过16进制到2进制的转换，又去掉高14位和低2位后（恼火的计算过程:-(），得到了如下结果：
+
+0、1、7、8、10、16、27、36。
+
+翻翻泄露的源代码我们只能找到一些nt4时代的老古董：
+
+IOCTL_ICMP_ECHO_REQUEST 0
+IOCTL_IP_SET_ADDRESS 1
+IOCTL_IP_ADD_NTE 7
+IOCTL_IP_DELETE_NTE 8
+
+而10、16、27、36我们不得而知:-(。
+
+
+2 方法
+
+下面一个一个来分析。
+
+在功能码为10时的函数栈如下：
+
+f59e8b8c 804e4d77 tcpip!Dispatch+0x5d
+f59e8b9c f9efe754 nt!IopfCallDriver+0x31
+f59e8c34 804e4d77 netflt!Dispatch+0x664
+f59e8c44 8056b9ab nt!IopfCallDriver+0x31
+f59e8c58 8057e9f7 nt!IopSynchronousServiceTail+0x60
+f59e8d00 80580bfa nt!IopXxxControlFile+0x611
+f59e8d34 804e006b nt!NtDeviceIoControlFile+0x2a
+f59e8d34 7c92eb94 nt!KiFastCallEntry+0xf8
+00bcfcfc 71a02092 ntdll!RtlpGetStackLimits+0x10
+*** WARNING: symbols timestamp is wrong 0x41214604 0x3ef274f8 for mswsock.dll
+00bcfd30 719c538f wshtcpip!WSHSetSocketInformation+0x6a7
+00bcfd54 00000000 mswsock!InsertNameSpace+0x22
+
+在功能码为16时的函数栈如下：
+
+f5ea3c34 804e4d77 tcpip!Dispatch+0x5b
+f5ea3c44 8056b9ab nt!IopfCallDriver+0x31
+f5ea3c58 8057e9f7 nt!IopSynchronousServiceTail+0x60
+f5ea3d00 80580bfa nt!IopXxxControlFile+0x611
+f5ea3d34 804e006b nt!NtDeviceIoControlFile+0x2a
+f5ea3d34 7c92eb94 nt!KiFastCallEntry+0xf8
+014cf5b0 76d32d73 ntdll!RtlpGetStackLimits+0x10
+014cf5d4 76d3315c iphlpapi!GetUniDirectionalAdapterInfo+0x30
+014cf834 76d3366c iphlpapi!GetAdapterList+0x34b
+014cf86c 76d361af iphlpapi!GetAdapterInfo+0x29
+*** WARNING: symbols timestamp is wrong 0x41214568 0x3ef274df for NETSHELL.dll
+014cf8c0 747b2c35 iphlpapi!GetAdapterInfoEx+0x1c
+014cfb40 747cf6dc NETSHELL!___PchSym_ (NETSHELL+0x42c35)
+014cfbc8 747d0d32 NETSHELL!___PchSym_ (NETSHELL+0x5f6dc)
+014cfbec 747cd7a4 NETSHELL!___PchSym_ (NETSHELL+0x60d32)
+014cfc10 747ce7eb NETSHELL!___PchSym_ (NETSHELL+0x5d7a4)
+014cfc24 77d18709 NETSHELL!___PchSym_ (NETSHELL+0x5e7eb)
+WARNING: Frame IP not in any known module. Following frames may be wrong.
+014cfc50 77d19655 0x77d18709
+014cfcb8 77d1958f 0x77d19655
+014cfd10 77d189e8 0x77d1958f
+014cfd20 74a6155a 0x77d189e8
+
+在功能码为36时的函数栈如下：
+
+f5ea3c34 804e4d77 tcpip!Dispatch+0x5b
+f5ea3c44 8056b9ab nt!IopfCallDriver+0x31
+f5ea3c58 8057e9f7 nt!IopSynchronousServiceTail+0x60
+f5ea3d00 80580bfa nt!IopXxxControlFile+0x611
+f5ea3d34 804e006b nt!NtDeviceIoControlFile+0x2a
+f5ea3d34 7c92eb94 nt!KiFastCallEntry+0xf8
+014cf520 76d328b4 ntdll!RtlpGetStackLimits+0x10
+014cf5a8 76d32983 iphlpapi!GetInterfaceInfo+0x86
+014cf5e0 76d330d1 iphlpapi!GetAdapterOrderMap+0xb5
+014cf834 76d3366c iphlpapi!GetAdapterList+0x46
+014cf86c 76d361af iphlpapi!GetAdapterInfo+0x29
+014cf8c0 747b2c6b iphlpapi!GetAdapterInfoEx+0x1c
+014cfb40 747cf6dc NETSHELL!___PchSym_ (NETSHELL+0x42c6b)
+014cfbc8 747d0d32 NETSHELL!___PchSym_ (NETSHELL+0x5f6dc)
+014cfbec 747cd7a4 NETSHELL!___PchSym_ (NETSHELL+0x60d32)
+014cfc10 747ce7eb NETSHELL!___PchSym_ (NETSHELL+0x5d7a4)
+014cfc24 77d18709 NETSHELL!___PchSym_ (NETSHELL+0x5e7eb)
+WARNING: Frame IP not in any known module. Following frames may be wrong.
+014cfc50 77d19655 0x77d18709
+014cfcb8 77d1958f 0x77d19655
+014cfd10 77d189e8 0x77d1958f
+
+在功能码为27时的函数栈如下：
+
+f5ea3c34 804e4d77 tcpip!Dispatch+0x5d
+f5ea3c44 8056b9ab nt!IopfCallDriver+0x31
+f5ea3c58 8057e9f7 nt!IopSynchronousServiceTail+0x60
+f5ea3d00 80580bfa nt!IopXxxControlFile+0x611
+f5ea3d34 804e006b nt!NtDeviceIoControlFile+0x2a
+f5ea3d34 7c92eb94 nt!KiFastCallEntry+0xf8
+00edcfec 76d36c47 ntdll!RtlpGetStackLimits+0x10
+00edd07c 76d36b7e iphlpapi!NhpAllocateAndGetInterfaceInfoFromStack+0x78
+00edd0a4 76d36b19 iphlpapi!NhGetInterfaceNameFromDeviceGuid+0x20
+00edd0c4 76d36acd iphlpapi!MapAdapterNameToFriendlyName+0x3a
+00edd7b8 76d33d43 iphlpapi!AddIPv4InterfaceInfo+0xe2
+00edd7dc 76d34009 iphlpapi!ForEachIPv4Interface+0x45
+00edd858 76d33ddc iphlpapi!GetAdapterAddresses+0xcb
+00edd8c8 76d33da7 iphlpapi!GetAdapterAddressesEx+0x26
+00edd8e4 747ba376 iphlpapi!GetAdaptersAddresses+0x60
+WARNING: Frame IP not in any known module. Following frames may be wrong.
+00eddc7c 7c92fb71 0x747ba376
+00eddd34 7c930732 ntdll!RtlpInheritAcl2+0xd0
+00edde44 7c9306ab ntdll!RtlCompactHeap+0x31
+00edde60 7c935d7d ntdll!RtlIsValidHandle+0x17
+7c930732 ffff9090 ntdll!RtlIsDosDeviceName_Ustr+0x9b
+7c93073a e0667c96 0xffff9090
+7c93073e c0337c96 0xe0667c96
+7c930742 d18bfe8b 0xc0337c96
+7c930746 f302e9c1 0xd18bfe8b
+7c93074a 83ca8bab 0xf302e9c1
+7c93074e aaf303e1 0x83ca8bab
+7c930752 ffff7ce9 0xaaf303e1
+7c930756 909090ff 0xffff7ce9
+7c93075a ff8b9090 0x909090ff
+7c93075e 83ec8b55 0xff8b9090
+7c930762 56531cec 0x83ec8b55
+7c930766 bfdb3357 0x56531cec
+7c93076a 7c99c3a0 0xbfdb3357
+7c93076e 99c380be ntdll!RtlpDosLPTDevice (ntdll+0x7c3a0)
+7c99c3a0 00000000 0x99c380be
+
+
+功能码16和Adapter有关，功能码36和Interface有关。
+Adapter和Interface分别对应数据链路层信息和网络层信息。
+
+功能码27和地址信息有关。
+
+下面是改变主IP时各模块间的关系：
+
+f9e7490c 8056b9ab nt!IopfCallDriver+0x31
+f9e74920 8057e9f7 nt!IopSynchronousServiceTail+0x60
+f9e749c8 80580bfa nt!IopXxxControlFile+0x611
+f9e749fc 804e006b nt!NtDeviceIoControlFile+0x2a
+f9e749fc 804de243 nt!KiFastCallEntry+0xf8
+f9e74a9c f8267600 nt!ZwDeviceIoControlFile+0x11
+f9e74ae4 f826758d netbt!SetTcpInfo+0x64
+f9e74b00 f82674c5 netbt!NbtSetTcpInfo+0x5d
+f9e74b28 f8270386 netbt!NbtOpenAndAssocConnection+0x12e
+f9e74b54 f8284049 netbt!NbtNewDhcpAddress+0x146
+f9e74bf8 f8281eeb netbt!NbtAddressAdd+0x176
+f9e74c14 f9d2abd7 netbt!TdiAddressArrival+0x4b
+f9e74c38 f9d2b2e8 TDI!TdiNotifyPnpClientList+0xd9
+f9e74c5c f9d2b51a TDI!TdiExecuteRequest+0x382
+f9e74c98 f9d2b745 TDI!TdiHandleSerializedRequest+0x1c4
+f9e74cb4 f829d212 TDI!TdiRegisterNetAddress+0x14b
+f9e74d00 f829d40d tcpip!NotifyAddrChange+0xef
+f9e74d38 f829d343 tcpip!IPAddAddrComplete+0xdf
+f9e74d58 f9d293e4 tcpip!CompleteIPSetNTEAddrRequestDelayed+0x25
+f9e74d74 804e57fe TDI!CTEpEventHandler+0x32
+f9e74dac 8057efed nt!ExpWorkerThread+0x100
+f9e74ddc 804fb477 nt!PspSystemThreadStartup+0x34
+00000000 00000000 nt!KiThreadStartup+0x16
+
+f61c6c34 804e4d77 tcpip!Dispatch+0x2e
+f61c6c44 8056b9ab nt!IopfCallDriver+0x31
+f61c6c58 8057e9f7 nt!IopSynchronousServiceTail+0x60
+f61c6d00 80580bfa nt!IopXxxControlFile+0x611
+f61c6d34 804e006b nt!NtDeviceIoControlFile+0x2a
+f61c6d34 7c92eb94 nt!KiFastCallEntry+0xf8
+0274f204 76d61b7e ntdll!RtlpGetStackLimits+0x10
+WARNING: Frame IP not in any known module. Following frames may be wrong.
+0274f2dc 7c931e75 0x76d61b7e
+0274f380 7c92e57c ntdll!RtlAppendUnicodeToString+0x4c
+0274f38c 7c930570 ntdll!ZwConnectPort+0x2
+0274f3bc 00000000 ntdll!RtlUpcaseUnicodeToOemN+0x4b8
+
+TDI.sys通过tcpip.sys注册的接口直接访问tcpip.sys。
+DDK中有关于TdiRegisterPnPHandlers的介绍，这里不多说。
+
+3 结论
+
+我们直接把2号功能码和27号功能码返回失败。系统提示要重新启动后才能生效。到此，我们的目的基本
+达到了。如果不想让系统提示重新后生效，就要欺骗一下，这次我们返回成功。系统没有提示，到在
+使用ipconfig时，ipconfig崩溃。最后我们去掉27号功能码，只拦截2号功能码，ipconfig也没有问题
+了:-)。 

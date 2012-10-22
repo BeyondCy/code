@@ -1,0 +1,94 @@
+Linux网络概述
+Xuefeng Chang(welfear@gmail.com)
+2008
+
+
+一、界面
+
+网络可以理解为不同计算机中的进程间通信。在Unix的发展史中，加州大学伯克利软件中心在Unix内核中
+实现TCP/IP协议。从而实现了在不同计算机中的进程间通信，使Unix成为网络操作系统。现在的类Unix都
+会提供了一个统一的网络编程界面，也就是现在网络程序员必学的socket编程接口。Socket抽象了各种
+网络环境，提供了统一的网络模型。
+一个网络插槽有三个逻辑因素组成。分别是网络地址族、类型、协议。网络地址族代表了不同的网络类型。
+比如AF_INET代表因特网、AF_IPX代表Novell的IPX、AF_X.25代表X.25、AF_LOCAL和AF_UNIX代表本机网络。
+类型是指有无连接。无连接类的报文会加入对应端口号，以便关联相应的进程。有连接类的报文除了关联
+进程还要提供确保可靠连接。最后是协议，一般用默认协议设值为零。这样如果地址族选用AF_INET，类型
+为SOCK_STRAM，协议为默认，就可以确定使用的是TCP协议。
+这部分代码在Linux\net\socket.c文件中。主要实现了由glibc函数到内核函数的映射。报文的发送和接收
+是通过主要是三对函数实现的，也就是recv()/send()、recvfrom()/sendto()、recvmsg()/sendmsg。另一
+组文件接口也可以实现，它们是read()/write()、readv()/writev()。它们的内在关系用一个树形结构来
+表示，这里以发送为例。
+Socket /File -> sys_send()/sys_ write() -> sys_sendto()/sock_write() -> sock _sendmsg()。
+有连接的情况倾向使用send()，无连接的情况倾向使用sendto()。但这些都不是绝对的，只要参数配置
+没有问题，这些函数不一定要成对使用。
+
+二、核心
+
+Linux的核心事务处理模式是所谓的VFS。虚拟文件系统把不同的文件系统连接起来，
+这里的文件系统可以是真实的也可以是虚拟的、逻辑上的。
+常见的文件系统有ext2、ext3、proc、dev。socket也是由一个文件系统实现，sockfs。
+只不过它是不可见的，它没有给我们留下直观印象，其它的地方都一样。struct socket代表了socket接口，
+它在include\linux\net.h中定义：
+
+struct socket {
+	socket_state			state;
+	unsigned long			flags;
+	const struct proto_ops	*ops;
+	struct fasync_struct		*fasync_list;
+	struct file				*file;
+	struct sock			*sk;
+	wait_queue_head_t		wait;
+	short				type;
+};
+
+其中有个sock结构。它在include\net\sock.h中定义，由于篇幅关系就不全列出来了。这个sock结构
+是Linux网络体系的核心数据结构。部分列举如下：
+
+struct sock {
+	unsigned char			sk_protocol;
+	unsigned short			sk_type;
+	int					sk_rcvbuf;
+	socket_lock_t			sk_lock;
+	wait_queue_head_t		*sk_sleep;
+	struct dst_entry		*sk_dst_cache;
+	struct sk_buff_head		sk_receive_queue;
+	struct sk_buff_head		sk_write_queue;
+	struct sk_buff_head		sk_async_wait_queue;
+	int					sk_sndbuf;
+	long					sk_rcvtimeo;
+	long					sk_sndtimeo;
+	struct sk_filter      	*sk_filter;
+	struct socket			*sk_socket;
+};
+
+sk_socket会指回它所关联的socket结构。sk_receive_queue和sk_write_queue分别指向
+接收和发送的包缓存，由于一个报文有可能对应多个包，所以sk_buff_head是一个双向循环结构：
+
+struct sk_buff_head {
+	struct sk_buff 	*next;
+	struct sk_buff 	*prev;
+	__u32			qlen;
+	spinlock_t		lock;
+};
+
+sk_rcvbuf和sk_sndbuf是最大缓存值，设置为64K。
+在Linux中，目录和文件都是是用file结构表示的。而file之间的关系是由dentry结构和inode结构来建立
+起目录项和索引节点表示的。下图可以把协议栈上下关系描述清楚。从上到下看的关系可以从左面说起。
+task_struct代表一个进程，它负责维护进程相关的数据结构，它被安排在一个固定的内存地址中，
+也就是内核栈空间在最开始部分。由CPU的TSS为每个进程的内核栈空间指定。其中的files指向
+files_struct，根据其中的fd_array[]数组，也就是文件描述符数组通过哈希表运算找到file结构。
+然后通过文件系统的dentry和inode结构就找到了socket。file结构的f_ops指向一组函数指针，也就是前面
+提到的文件读写接口。read()/write()根据fd找到sock_read()和sock_write()。
+socket中的struct proto_ops指向本地址族的真正实现函数。也就是sock_sendmsg()/sock_recvmsg()
+最后要调用的函数。继续通过socket结构找到sock结构。最后把写数据加入到sk_write_queue当中。
+从下到上的关系要从图的右侧看起。unix_socket_table是一个全局数组，可以通过sockfd在数组中找到
+sock结构，完成上面从上到下的过程。它还实现了sock结构的双向循环列表。这样如果有来自网络上数据包，
+通过循环查找sock结构中的地址信息就可以确定sock，进而找到socket。再把包中的数据
+加入sk_receive_queue中。这样数据就可以通过sock结构中的sk_buff结构中转到协议部分和网卡部分。
+ 
+三、小结
+
+本文没有完整的描述Linux网络结构中的其它两部分。也就是结尾提到的协议部分和网
+卡部分。不过Linux网络的关键数据结构和大致的思路在上面的分析中都有体现。
+剩下部分的代码也在Linux\net目录下。协议和硬件驱动的代码被分类放在不同的目录下。
+不同的协议和硬件要求不同的处理数据方式。这部分的代码会很繁杂。

@@ -1,0 +1,190 @@
+文档名称：算法时间线(A Timeline Of Algorithm History)
+文档维护：Xuefeng Chang(welfear@gmail.com)
+文档日期：2011.2.15(Thanks to @fcicq)
+
+
+
+1945 Mergesort <Merge Sort>
+
+     Merge sort(Merge)           O(nlgn) O(nlgn) O(n)    O(n)    S
+
+1946 ENIAC (the first general-purpose electronic computer)
+
+1949 EDVAC (the first von Neumann architecture computer)
+
+1952 Huffman <A Method for the Construction of Minimum-Redundancy Codes>
+
+1953 Hash Table (internal IBM memorandum)
+
+1956 regular sets (Regex)
+
+1957 FORTRAN (the first widely used programming language)
+
+1958 Lisp (the second-oldest high-level programming language)
+
+1959 Shell sort <A high-speed sorting procedure>
+
+     Shell sort(insert)          O(n)    O(n^1.5)O(nlgn) O(1)    U
+
+1960 Trie <Trie Memory>
+
+1961 CRC <Cyclic Codes for Error Detection>
+
+1962 Quicksort <Quicksort>
+
+     Quick sort(partition)       O(nlgn) O(nlgn) O(n^2)  O(lgn)  U
+
+     通过交换相邻元素进行排序的任何算法的时间复杂度都是O(n^2)。
+
+     bubble sort(exchange)       O(n)    O(n^2)  O(n^2)  O(1)    S
+     Selection sort(select)      O(n^2)  O(n^2)  O(n^2)  O(1)    U
+     Insertion sort(insert)      O(n)    O(n+d)  O(n^2)  O(1)    S
+
+     选择排序需要N^2/2次比较和N次交换。
+     插入排序需要N^2/4次比较和交换。
+     冒泡排序需要N^2/2次比较和交换。
+     插入排序和冒泡排序在逆序数为常数时的时间复杂度为O(n)。
+     对于部分有序的输入，插入排序效率比较好，并与逆序数分布无关。
+     对于交换操作耗时的排序应选择选择排序，时间复杂度为O(n)。
+
+1962 AVL <An Algorithm for the Organization of Information>
+
+     Space      O(n)    O(n)
+     Search     O(lgn)  O(lgn)
+     Insert     O(lgn)  O(lgn)
+     Delete     O(lgn)  O(lgn)
+
+1964 IBM System/360 (first family of computers designed to
+     cover the complete range of applications, from small to
+     large, both commercial and scientific.)
+1964 Ternary search tree <Randomized Binary Searching with Tree Structures>
+1964 Heapsort <Average-case results on heapsort, 1987>
+
+     Heap sort(select)           O(nlgn) O(nlgn) O(nlgn) O(1)    U
+
+1965 FFT <An algorithm for the machine calculation of complex Fourier series>
+
+1968 Radix Tree <Practical Algorithm to Retrieve Information Coded
+     in Alphanumeric> (hierarchical organization of IP addresses)
+1968 Sorting network <Sorting networks and their applications>
+
+1969 ARPANET (the first wide area packet switching network)
+1969 BSP Tree (1969~1980)
+
+1970 Bloom filter (Google BigTable,  Squid Web Proxy Cache)
+1970 2-3 tree (AA Tree(Arne Andersson), 2-3-4 tree)
+
+1971 C Programming Language
+1971 ed (grep)
+
+1972 B-Tree <Organization and Maintenance of Large Ordered Indexes>
+
+     Space      O(n)    O(n)
+     Search     O(lgn)  O(lgn)
+     Insert     O(lgn)  O(lgn)
+     Delete     O(lgn)  O(lgn)
+
+1972 Red-black Tree <Symmetric binary B-Trees:
+     Data structure and maintenance algorithms>
+
+     Space      O(n)    O(n)
+     Search     O(lgn)  O(lgn)
+     Insert     O(lgn)  O(lgn)
+     Delete     O(lgn)  O(lgn)
+
+1973 Suffix Tree <Linear pattern matching algorithm>
+
+1973 UNIX
+
+1975 Aho-Corasick <Efficient String Matching>
+
+1976 Diff <An Algorithm for Differential File Comparison>
+     (1986 Diff <An O(ND) Difference Algorithm and Its Variations>)
+
+1977 Boyer-Moore <A Fast String Searching Algorithm>
+1977 KMP <Fast Pattern Matching in Strings>
+1977 LZ <A Universal Algorithm for Sequential Data Compression>
+1977 kd-tree <Worst-case analysis for region and partial region searches
+     in multidimensional binary search trees and balanced quad trees>
+
+1979 Hash Tree <A digital signature based on a conventional encryption function>
+     (used in ZFS filesystem, Google Wave protocol, tarsnap backup system)
+
+1979 B+ Tree <The Ubiquitous B-Tree>
+     (NTFS, ReiserFS, NSS, XFS, JFS filesystems, DB2, Microsoft SQL Server,
+     Oracle, PostgreSQL, MySQL, SQLite, CouchDB, Tokyo Cabinet, Tokyo Tyrant)
+
+1981 IBM PC
+
+1986 T-tree <A Study of Index Structures for
+     Main Memory Database Management Systems> (Datablitz, eXtremeDB,
+     MySQL Cluster, Oracle TimesTen and KairosMobileLite)
+
+1984 Macintosh
+
+1985 GNU
+1985 C++ Programming Language
+1985 IEEE POSIX Standard (1003.1(C lib),1003.2(shell/tools),1003.4(Unix API))
+1985 Splay Tree <Self-Adjusting Binary Search Trees>
+
+     Space      O(n)    O(n)
+     Search     O(lgn)  O(n)
+     Insert     O(lgn)  O(n)
+     Delete     O(lgn)  O(n)
+
+1986 PJWHash
+1986 Regex (Henry Spencer's Version)
+
+1987 malloc (Doug Lea 's Version)
+
+1988 Linear congruential generator <Random Number Generators:
+     Good Ones Are Hard To Find>
+
+     Borland C/C++      2^32    22695477        1
+     glibc              2^32    1103515245      12345
+     ANSI C             2^32    1103515245      12345
+     Borland Delphi     2^32    134775813       1
+     VisualC++          2^32    214013          2531011
+
+1989 Treap <Randomized Search Trees>
+1989 Double-Array Trie <An Efficient Digital Search Algorithm
+     by Using a Double-Array Structure>
+
+1990 ELF (UNIX SVR4)
+1990 RSHash
+1990 Sunday <A very fast substring search algorithm>
+1990 Regex <Algorithms for finding patterns in strings>
+1990 Skip list <Skip lists: a probabilistic alternative to balanced trees>
+1990 Paxos <Reaching Agreement in the Presence of Faults, 2007>
+
+1991 Linux
+1991 Suffix array <Suffix arrays: a new method for on-line string searches>
+
+1993 Windows NT
+1993 Htree (for ext2, but implemented in ext4(Linux kernel 2.6.23))
+1993 B*-tree <B**-tree: a data organization method for high storage utilization>
+     (used in the HFS and Reiser4 file systems)
+
+1994 Slab <The Slab Allocator: An Object-Caching Kernel Memory Allocator>
+
+1995 SHA-1
+
+1996 MD5
+
+1997 Jenkins hash <A hash function for hash Table lookup>
+1997 Consistent hashing <Consistent Hashing and Random Trees:
+     Distributed Caching Protocols for Relieving Hot Spots
+     on the World Wide Web>
+1997 Introsort <Introspective Sorting and Selection Algorithms>
+
+     Introsort(partition/select)        ?    O(nlgn) O(nlgn) O(lgn) U
+
+2002 Timsort (Python)
+
+     Timesort(insert/merge)             O(n) O(nlgn) O(nlgn) O(n)   S
+
+2005 Compressed Suffix Array <Compressed Suffix Arrays and Suffix Trees,
+     with Applications to Text Indexing and String Matching>
+
+2007 BinaryDiff <Binary Files and Forcing Text Comparison>
+2007 Dancing tree <Reiser4 release notes - Dancing Tree>

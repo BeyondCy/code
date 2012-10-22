@@ -1,0 +1,319 @@
+文档名称：Windows NT Registry
+文档维护：welfear、古月今人
+创建时间：2009.6.10
+修改历史：2009.7.1添加古月今人文章
+修改历史：2009.7.5添加flyingpig对FreeDisplay的分析
+
+
+Windows Registry是操作系统中十分重要的组成部分。它既是十分基础又十分复杂。
+在兼容过程中如果处理不好，就会引起性能问题，同时用户态的注册表支持也无法
+支持Windows驱动和内核本身的应用。对注册表实现的研究不仅可以实现兼容内核，
+同时也可以学习到很多内核技术，提高编程水平。常见的注册表文件有1.3和1.5
+两个版本(包括Vista)。WRK1.2中有1.5版本的代码，但实际的情况还有待分析，不管
+怎么说，我们都要先从1.3这个广泛使用的版本说起。
+
+注册表相关的API十分多，也很繁杂。对于Key来说，主要有Create/Open、Delete、
+Enumerate、Flush、Query、Save这些操作，而对于Value来说，主要有Query、Set、
+Enumerate几个操作。这里我们还是以枚举、读和写为例展开分析。
+
+Hive、Cell、Bin是registry的基本概念。Hive代表了整个Root Key文件。Cell是
+储存Key和Value的基本单位。Bin是分配的基本单位，每次分配按照block来进行的，
+x86上典型的块大小是4KB，所以Bin的大小就满足本次分配大小并按照4KB大小对齐
+的长度。
+
+通常调用者(可能是驱动或是应用)通过Native API调用注册表相关服务。
+
+以应用为例：
+由系统调用进入内核空间时，ZwXxxKey函数会被转化为CmXxxKey函数，这中间会通过
+对象管理机制把名字空间转化为Key控制块。
+
+以NtEnumerateKey为例：
+在经过参数和安全性检查之后，通过调用ObReferenceObjectByHandle可以得到
+CM_KEY_BODY的数据结构，这里其中就有Key控制块指针PCM_KEY_CONTROL_BLOCK，
+之后，CmEnumerateKey接受了以KeyControlBlock为参数的调用。要完成枚举工作，
+首先需要根据找到Cell的索引，再找到对应Key的节点信息，最后是根据节点信息
+查询相关的信息。CmpFindSubKeyByNumber就是用查找Cell索引信息的，它接受三个
+参数，分别是Hive、KeyNode、Number。其中Hive和KeyNode都是通过
+KeyControlBlock获得的，而Number则是调用者传递过来的。实际的查找工作是由
+CmpDoFindSubKeyByNumber来完成的，它接受Hive、SubKeyCell索引、Number三个参数。
+SubKeyCell是通过HvGetCell获得的，这个函数可以根据Hive和Cell索引得到这个Cell
+的储存值，在这里通过SubKeyCell索引就得到了SubKey的索引。
+
+要了解软件原理就必须了解该软件各种概念之间是如何交流数据的。在初始化系统注册表
+服务时，系统首先会读取文件的前4KB的内容。这就是该Hive文件的基本控制块，定义如下：
+
+typedef struct _HBASE_BLOCK {
+    ULONG           Signature;
+    ULONG           Sequence1;
+    ULONG           Sequence2;
+    LARGE_INTEGER   TimeStamp;
+    ULONG           Major;
+    ULONG           Minor;
+    ULONG           Type;
+    ULONG           Format;
+    HCELL_INDEX     RootCell;
+    ULONG           Length;
+    ULONG           Cluster;
+    UCHAR           FileName[HBASE_NAME_ALLOC];
+    ULONG           Reserved1[99];
+    ULONG           CheckSum;
+    ULONG           Reserved2[128*7];
+} HBASE_BLOCK, *PHBASE_BLOCK;
+
+结合XP SP2上的default.sav文件：
+
+0000000: 7265 6766 0100 0000 0100 0000 0000 0000  regf............
+0000010: 0000 0000 0100 0000 0500 0000 0000 0000  ................
+0000020: 0100 0000 2000 0000 0060 0100 0100 0000  .... ....`......
+0000030: 0000 0000 0000 0000 0000 0000 0000 0000  ................
+0000040: 0000 0000 0000 0000 0000 0000 0000 0000  ................
+
+Signature：           必须为0x66676572，也就是regf，表明这是一个注册表文件；
+Sequence1和Sequence2，看起来都为1，具体用处不知
+TimeStamp：           时间戳，这里看起来为0
+Major：               主版本，1
+Minor：               次版本，5
+Type：                这里为0，表示是Primary文件，如果打开Log文件，这里看到的是1
+Format：              恒为1
+RootCell：            这个字段很重要，这是根节点的位置，这里是0x20，
+                      这个值是从HBASE_BLOCK最末尾开始计算。HBASE_BLOCK大小
+                      为一块，即0x1000，那么根节点就是在0x1020的地方。从根节点
+                      开始，就可以遍历整个注册表文件。
+Length：              注册表文件长度，这个长度不包括HBASE_BLOCK本身
+Cluster：             簇大小，通常为1
+FileName：            应该是文件名，可在这里我们没有看到
+Reserved1：           保留字段，不过看文件内容，比较规律，应该是一些有用的信息，
+                      不过ReactOS并没有使用这些数据
+Checksum：            位于0x1fc位置，是对前面0x200个字节的校验和后面的字段都为空，
+                      暂时不知道如何使用。
+
+在控制块后面就是注册表基本的分配单元Bin的结构了，定义如下：
+
+typedef struct  _HBIN {
+    ULONG       Signature;
+    ULONG       FileOffset;
+    ULONG       Size;
+    ULONG       Reserved1[2];
+    LARGE_INTEGER TimeStamp;
+    ULONG       MemAlloc;
+} HBIN, *PHBIN;
+
+第一块bin实际内容为：
+
+0001000: 6862 696e 0000 0000 0010 0000 0000 0000  hbin............
+0001010: 0000 0000 0000 0000 0000 0000 0000 0000  ................
+
+Signature： 标志，一定为0x6E696268，即hbin，表示这是一个HBIN块
+FileOffset：偏移，指相对于HBASE_BLOCK末尾的偏移，所以这里为0
+Size：      当前HBIN块大小，0x1000的倍数，通常为0x1000
+TimeStamp： 时间戳，这里也为空
+
+其实HBIN结构，只是HBIN块的一个头部，占用了0x20个字节，后面跟着的就是
+真正的数据了。数据部分由2部分组成，一部分是HCELL结构，还有一部分是CELL_DATA，
+先看HCELL结构：
+
+typedef struct _HCELL {
+    LONG    Size;
+    union {
+        struct {
+            ULONG Last;
+            union {
+                ULONG UserData;
+                HCELL_INDEX Next;
+            } u;
+        } OldCell;
+        struct {
+            union {
+                ULONG UserData;
+                HCELL_INDEX Next;
+            } u;
+        } NewCell;
+    } u;
+} HCELL, *PHCELL;
+
+很简单，就是一个Size字段，说明后面的那个CELL_DATA的大小，
+不过需要注意的是，只有当Size为负数的时候，才说明这块空间是在使用中，
+CELL_DATA的大小（包括HCELL本身）为-Size。当Size为正数是，说明有Size
+个字节的空间空闲着可以使用。
+
+
+现在我们可以回过头来看看枚举、查询、设置几个典型操作过程，通过跟踪这些操作
+就可以慢慢搞清楚这些概念如何协调工作的。
+
+CmEnumerateKey:
+第一个参数KeyControlBlock可以得到当前键对应的CM_KEY_CONTROL_BLOCK结构。当然在
+得到它之前需要通过WindowsNT的对象管理器通过解析句柄得到这个结构。然后，
+hive = KeyControlBlock->KeyHive;
+cell = KeyControlBlock->KeyCell;
+就找到了它的Hive和Cell结构指针。接下来使用内部函数CmpFindSubKeyByNumber就可以
+通过Hive、KeyNode、Index得到childCell索引。有了Hive和childCell索引就可以通过
+HvGetCell得到childCell的结构。最后CmpQueryKeyData完成了调用者的请求，它把childCell
+结构也就是CM_KEY_NODE中的值返回。
+
+CmQueryKey:
+分两种情况，如果是查询Key的名字，那就直接用KeyControlBlock中的NameBlock中保存的
+名字直接返回，如果是其他要求则也调用CmpQueryKeyData来满足。
+
+从Vista开始系统中出现了Win32 API RegSetKeyValue。但对于Value来说，我们还是看之前
+的相关操作函数：
+
+CmEnumerateValueKey、CmQueryValueKey、CmSetValueKey。
+除去Value Cache机制和针对Value大小的存储机制，它们和Key的实现没有本质上的区别。
+现在关键的问题是HvGetCell是如何工作的。根据前面的介绍我们知道Hive文件在磁盘上是
+以4KB为单位进行分配的，第一块比较特殊称为基本块。这样每个块的偏移都是0x1000的整数倍。
+由于内存和外存之间要交换数据，那么就需要建立起两者之间的对应关系。根据块的特点，我们
+把文件的偏移作为索引。这个索引有32位(0-31)，其中最高位31代表存储类型，分为正常的和
+易挥发的。21-30位代表Table，12-20位代表Block。0-11位就是块内偏移。这种设计思想和MMU分页
+很类似。这样一个固定的文件偏移就变成了灵活多变的内存地址了。而从索引中获得对应数值需要
+使用几个宏才能方便的实现：
+
+获得类型信息：
+#define HCELL_TYPE_MASK         0x80000000
+#define HCELL_TYPE_SHIFT        31
+
+#define HvGetCellType(Cell) ((ULONG)((Cell & HCELL_TYPE_MASK) >> HCELL_TYPE_SHIFT))
+
+获得Table信息：
+#define HCELL_TABLE_MASK        0x7fe00000
+#define HCELL_TABLE_SHIFT       21
+
+获得Block信息：
+#define HCELL_BLOCK_MASK        0x001ff000
+#define HCELL_BLOCK_SHIFT       12
+
+获得块偏移：
+#define HCELL_OFFSET_MASK       0x00000fff
+
+不难计算出Table最多可以有1024个，而Block最多可以存在512个。
+
+#define HTABLE_SLOTS        512
+#define HDIRECTORY_SLOTS    1024
+
+而HvGetCell其实就是调用HvpGetCellPaged，它根据Hive和Cell索引得到对应的数值。这里，Cell
+的类型就决定了返回指针类型，它们可以是如下结构中的任何一种：
+
+typedef struct _CELL_DATA {
+    union _u {
+        CM_KEY_NODE      KeyNode;
+        CM_KEY_VALUE     KeyValue;
+        CM_KEY_SECURITY  KeySecurity;
+        CM_KEY_INDEX     KeyIndex;
+        HCELL_INDEX      KeyList[1];
+        WCHAR            KeyString[1];
+    } u;
+} CELL_DATA, *PCELL_DATA;
+
+这就是CmXxx函数基本都会用到它的原因。好了，下面的代码含义非常明显了：
+
+Type = HvGetCellType(Cell);
+Table = (Cell & HCELL_TABLE_MASK) >> HCELL_TABLE_SHIFT;
+Block = (Cell & HCELL_BLOCK_MASK) >> HCELL_BLOCK_SHIFT;
+Offset = (Cell & HCELL_OFFSET_MASK);
+
+那么传说中的表格在哪呢？
+
+(Hive->Storage[Type].Map)->Directory[Table]->Table[Block]
+
+Hive的结构之前没有介绍(因为它太大了)，原来Hive把Type、Table、Block三个概念全部
+囊括其中了。这样我们就找到下面这个结构：
+
+typedef struct _HMAP_ENTRY {
+    ULONG_PTR    BlockAddress;
+    ULONG_PTR    BinAddress;
+} HMAP_ENTRY, *PHMAP_ENTRY;
+
+BlockAddress + Offset就是HCELL的地址。HCELL中的UserData就是我们苦苦找寻的PCELL_DATA，
+返回它就完成任务了。
+
+那么Cell和Bin的相互关系是如何建立的呢？毫无疑问，了解Hive的初始化过程对理解这些概念是
+相当有好处的。在CmInitSystem1处，各个Hive文件的初始化过程并不相同，这里我们略去文件加载
+过程，那么就以CmInitSystem1->CmpInitializeHive->HvInitializeHive为例作为开头。系统
+在载入Hive文件之后首先用第一4KB块初始化了HBASE_BLOCK结构，然后检查Hive文件的完整性，
+之后调用HvpBuildMapAndCopy创建Cell和Bin的位图关系。根据Table的数量，在初始化时如果Hive
+文件的Block数量在512个之内，也就是1MB，那么就没Directory什么事了，直接使用SmallDir字段，
+同时Map也要指向SmallDir。但文件很大时就要使用HvpAllocateMap，它分配了整个Directory，并
+把Block按大小个顺序填入Directory中。
+
+对于Bin的初始化就比较复杂了，作者使用了while套do-while中套do-while实现的。简单的说，就是
+分配Bin结构的内存然后根据Bin结构得到本Bin块的大小，把它们填入BlockAddress和BinAddress中。
+这样每个块都会在Bin结构中留下记录，其中BlockAddress会记录每个块的地址，而BinAddress就是
+当前Bin的地址。
+
+到了建立空闲Cell列表的时候了，PHCELL结构就在PHBIN结构之后，也就是通过Bin + Bin->Size得到。
+而区别当前Cell是否空闲也有简单的鉴别方法，如果pCell->Size最高位是否置1来确定。如果置1那就
+直接返回，如果没有，那就说明这是空闲的，需要加入Hive的空闲列队中方便管理和使用。系统使用
+HvpEnlistFreeCells把Cell加入空闲列表。在第一次调用这个函数时需要建立列表，之后则把空闲Cell
+直接加入列队尾部即可。无论怎样，都需要下面三句代码获得PHCELL的指针。
+
+HvpComputeIndex(Index, Size);
+First = &(Hive->Storage[Type].FreeDisplay[Index]);
+pcell = HvpGetHCell(Hive, Cell);
+
+这里首先感谢flyingpig对本文的帮助。第一句实际上是一个宏，通过Size计算Index，Size是Cell的大小。
+
+#define HHIVE_FREE_DISPLAY_SHIFT 3  // This must be log2 of HCELL_PAD!
+#define HHIVE_LINEAR_INDEX      16  // All computed linear indices < HHIVE_LINEAR_INDEX are valid
+#define HHIVE_FREE_DISPLAY_SIZE 24
+
+#define HvpComputeIndex(Index, Size)                                    \
+    {                                                                   \
+        Index = (Size >> HHIVE_FREE_DISPLAY_SHIFT) - 1;                 \ 
+        if (Index >= HHIVE_LINEAR_INDEX ) {                             \
+                                                                        \
+            /*                                                          \
+            ** Too big for the linear lists, compute the exponential    \
+            ** list. Shift the index to make sure we cover the whole    \
+            ** range.                                                   \
+            */                                                          \
+            Index >>= 4;                                                \
+                                                                        \
+            if (Index > 255) {                                          \
+                /*                                                      \
+                ** Too big for all the lists, use the last index.       \
+                */                                                      \
+                Index = HHIVE_FREE_DISPLAY_SIZE-1;                      \
+            } else {                                                    \
+                Index = CmpFindFirstSetLeft[Index] +                    \
+                        HHIVE_LINEAR_INDEX;                             \
+            }                                                           \
+        }                                                               \
+    }
+
+
+要理解这些计算方法恐怕先要考察这个数组，
+CmpFindFirstSetLeft就是KiFindFirstSetLeft，这也是内核比较常见的查找一个BYTE最高位的方法。
+
+数组的前4行分别是：
+
+0 - 15 000000 - 001111
+16 - 31 010000 - 011111
+32 - 47 100000 - 101111
+48 - 63 110000 - 111111
+
+第2行所有数字的最高位是4，第3、4行的所有数字最高位是5。根据这个规律就得到了下面这个数组。
+
+CCHAR KiFindFirstSetLeft[256] = {
+0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
+4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7};
+
+不难理解为了加速查找相应大小的Cell，以Cell大小作为索引建立HashTable可以方便找到相同数量级的Cell。
+FreeDisplay字段为24个Cell Index的表，每个Cell Index就可以找到相应的Cell结构，而其中的u.Cell.u.Next
+就指向了下一个类似大小的Cell。因此只要根据Size计算出该Cell应该对应哪个数量级的Cell List，就可以根据
+第一个找到所有的Free Cell。根据HHIVE_LINEAR_INDEX，此表被分成了两个计算方法。前16项比较简单，直接把
+Cell大小除8，得到索引。这样就形成了：8 16 24 32...... 128等间隔的队列。后者把Cell大小的高8位利用
+起来，从左到右根据高位设置情况形成了：128 256 512 ......32768等间隔列队(包括大于32768的)。
+剩下的事情就是计算当前Cell所占用的Bin了，最后把它们都放入FreeBins中。

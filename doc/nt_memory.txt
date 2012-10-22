@@ -1,0 +1,156 @@
+文档名称：NT物理内存浅析
+文档维护：welfear
+创建时间：2009年6月2日
+
+
+我想我还没有完全搞清楚事情的全部经过，但至此我应该可以满足我的好奇心。
+WinHex无法全部读取系统中的全部物理内存是十分正常的现象。
+在这之前，我们先把问题转换一下，WinHex是使用\Device\PhysicalMemory
+来读取系统物理内存的（这一点不难证明，即使WinHex没有开源），
+所以问题就变成了通过内核对象\Device\PhysicalMemory无法访问全部物理内存。
+所以我想还是先从这个内核对象入手吧。
+
+首先要弄明白这个内核对象是怎么回事。在MmInitSystem中，也就内存子系统初始化时会调用
+函数MiSectionInitialization。在MiSectionInitialization中，系统会创建SectionObject Type。
+在建立Section对象后，第一件事就是创建\Device\PhysicalMemory对象。
+这个对象就是用来映射物理内存的。而它的ControlArea和其它Section对象是有区别的，体现在
+
+ControlArea->u.Flags.PhysicalMemory = 1;
+
+这句上。当打开这个对象时，PhysicalMemory是不为零的。这样接下来再使用NtMapViewOfSection
+映射内存时，在NtMapViewOfSection->MmMapViewOfSection中就会通过
+ControlArea->u.Flags.PhysicalMemory是否为零来选择调用
+MiMapViewOfPhysicalSection或是MiMapViewOfImageSection。显然，在映射物理内存时会调用
+MiMapViewOfPhysicalSection。在此之前还有一处检测ControlArea->u.Flags.PhysicalMemory的代码：
+
+if (Section->Segment->ControlArea->u.Flags.PhysicalMemory) {
+  HighestPhysicalAddressInPfnDatabase = (ULONGLONG)MmHighestPhysicalPage << PAGE_SHIFT;
+  CapturedOffset.LowPart = CapturedOffset.LowPart & ~(PAGE_SIZE - 1);
+  if (PreviousMode != KernelMode) {
+    if ((ULONGLONG)(CapturedOffset.QuadPart + CapturedViewSize) > HighestPhysicalAddressInPfnDatabase) {
+    Status = STATUS_INVALID_PARAMETER_6;
+    goto ErrorReturn;
+    }
+  }
+}
+
+显然，当用户态请求的映射范围超出了MmHighestPhysicalPage指示的系统内存页时就会发生参数错误而返回。
+至此，我们的注意力又转向全局变量MmHighestPhysicalPage的初始化上。在研究这个问题之前我们简单描述下
+整个系统的初始化过程。
+
+绕过远古时期的MBR、BOOT Sector之流，直接来到ntldr。ntldr由16位的ntldr.com和32位的osloader.exe
+两部分组成。
+在16位的引导代码中，系统会通过系统BIOS收集一些硬件数据为以后做准备。与Linux引导类似，
+Windows NT也是通过
+BIOS中断int 15h来收集系统内存的位图信息。下面是freeloader中的代码：
+
+static ULONG
+PcMemGetBiosMemoryMap(PBIOS_MEMORY_MAP BiosMemoryMap, ULONG MaxMemoryMapSize)
+{
+  REGS Regs;
+  ULONG MapCount;
+
+  DPRINTM(DPRINT_MEMORY, "GetBiosMemoryMap()\n");
+
+  /* Int 15h AX=E820h
+   * Newer BIOSes - GET SYSTEM MEMORY MAP
+   *
+   * AX = E820h
+   * EAX = 0000E820h
+   * EDX = 534D4150h ('SMAP')
+   * EBX = continuation value or 00000000h to start at beginning of map
+   * ECX = size of buffer for result, in bytes (should be >= 20 bytes)
+   * ES:DI -> buffer for result
+   * Return:
+   * CF clear if successful
+   * EAX = 534D4150h ('SMAP')
+   * ES:DI buffer filled
+   * EBX = next offset from which to copy or 00000000h if all done
+   * ECX = actual length returned in bytes
+   * CF set on error
+   * AH = error code (86h)
+   */
+  Regs.x.eax = 0x0000E820;
+  Regs.x.edx = 0x534D4150; /* ('SMAP') */
+  Regs.x.ebx = 0x00000000;
+  Regs.x.ecx = sizeof(BIOS_MEMORY_MAP);
+  Regs.w.es = BIOSCALLBUFSEGMENT;
+  Regs.w.di = BIOSCALLBUFOFFSET;
+  for (MapCount = 0; MapCount < MaxMemoryMapSize; MapCount++)
+    {
+      Int386(0x15, &Regs, &Regs);
+
+      DPRINTM(DPRINT_MEMORY, "Memory Map Entry %d\n", MapCount);
+      DPRINTM(DPRINT_MEMORY, "Int15h AX=E820h\n");
+      DPRINTM(DPRINT_MEMORY, "EAX = 0x%x\n", Regs.x.eax);
+      DPRINTM(DPRINT_MEMORY, "EBX = 0x%x\n", Regs.x.ebx);
+      DPRINTM(DPRINT_MEMORY, "ECX = 0x%x\n", Regs.x.ecx);
+      DPRINTM(DPRINT_MEMORY, "CF set = %s\n", (Regs.x.eflags & I386FLAG_CF) ? "TRUE" : "FALSE");
+
+      /* If the BIOS didn't return 'SMAP' in EAX then
+       * it doesn't support this call */
+      if (Regs.x.eax != 0x534D4150)
+        {
+          break;
+        }
+
+      /* Copy data to caller's buffer */
+      RtlCopyMemory(&BiosMemoryMap[MapCount], (PVOID)BIOSCALLBUFFER, Regs.x.ecx);
+
+      DPRINTM(DPRINT_MEMORY, "BaseAddress: 0x%p\n", (PVOID)(ULONG_PTR)BiosMemoryMap[MapCount].BaseAddress);
+      DPRINTM(DPRINT_MEMORY, "Length: 0x%p\n", (PVOID)(ULONG_PTR)BiosMemoryMap[MapCount].Length);
+      DPRINTM(DPRINT_MEMORY, "Type: 0x%x\n", BiosMemoryMap[MapCount].Type);
+      DPRINTM(DPRINT_MEMORY, "Reserved: 0x%x\n", BiosMemoryMap[MapCount].Reserved);
+      DPRINTM(DPRINT_MEMORY, "\n");
+
+      /* If the continuation value is zero or the
+       * carry flag is set then this was
+       * the last entry so we're done */
+      if (Regs.x.ebx == 0x00000000 || !INT386_SUCCESS(Regs))
+        {
+          MapCount++;
+          DPRINTM(DPRINT_MEMORY, "End Of System Memory Map!\n\n");
+          break;
+        }
+
+      /* Setup the registers for the next call */
+      Regs.x.eax = 0x0000E820;
+      Regs.x.edx = 0x534D4150; /* ('SMAP') */
+      /* Regs.x.ebx = 0x00000001;  Continuation value already set by the BIOS */
+      Regs.x.ecx = sizeof(BIOS_MEMORY_MAP);
+      Regs.w.es = BIOSCALLBUFSEGMENT;
+      Regs.w.di = BIOSCALLBUFOFFSET;
+    }
+
+  return MapCount;
+}
+
+代码中的注释已经可以说明通过int 15h获得E820位图信息的方法了，代码中还有作者的实践经验:-)。
+在获得系统内存状态之后，在osloader.exe获得控制权时会获得引导参数指针。也就是在跳入
+NtProcessStartup时，之后调用KiRosBuildOsMemoryMap转换引导参数收集的系统E820内存位图为
+MemoryDescriptorList的形式。相关代码在reatcos\ntoskrnl\ke\freeldr.c中。
+经过osloader.exe的引导后，Windows NT内核获得了控制权。在跳入KiSystemStartup时同样也
+传入了前一模块的引导信息参数指针。在轮到内存子系统初始化时，系统调用了MiInitMachineDependent。
+在MmInitSystem->MiInitMachineDependent中：
+
+if ((MemoryDescriptor->MemoryType != LoaderFirmwarePermanent) &&
+  (MemoryDescriptor->MemoryType != LoaderBBTMemory) &&
+  (MemoryDescriptor->MemoryType != LoaderSpecialMemory)) {
+  if (MemoryDescriptor->MemoryType != LoaderBad) {
+    MmNumberOfPhysicalPages += MemoryDescriptor->PageCount;
+}
+
+if (MemoryDescriptor->BasePage < MmLowestPhysicalPage) {
+  MmLowestPhysicalPage = MemoryDescriptor->BasePage;
+}
+if ((MemoryDescriptor->BasePage + MemoryDescriptor->PageCount) > MmHighestPhysicalPage) {
+  MmHighestPhysicalPage =
+  MemoryDescriptor->BasePage +
+  MemoryDescriptor->PageCount - 1;
+  }
+}
+
+这样MmHighestPhysicalPage就被初始化为非Firmware相关的最大内存数。
+这就是通过WinHex使用的用户态请求的\Device\PhysicalMemory内存映射就这样
+无法访问全部内存的原因。
+此外通过MmMapIoSpace是可以访问全部内存的，不然怎么读取ACPI Table呢？

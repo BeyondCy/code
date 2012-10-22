@@ -1,0 +1,174 @@
+文档名称：How to find real cdrom device
+文档维护：welfear@gmail.com
+创建时间：2008年6月17日
+
+
+目录
+
+
+0   背景
+
+1   数据
+
+2   问题
+
+
+0   背景
+
+本文档描述一种简单、可靠的找到CdRom的软方法。虚拟光驱的方法很多，要识别虚拟光驱不如可靠的枚举
+系统中真实存在光驱。
+
+1   数据
+
+要枚举Windows NT中的内核设备栈，尤其是总线栈结构，必须借助devnode结构。但这个结构并没有公开，也
+没有任何已知的文档参考。下面从驱动、设备、节点和它们的关系入手找到解决问题的方法。
+
+假定使用PCI总线。Driver->DeviceObject和Device->AttachedDevice可以枚举下面的Device Object list。
+
+kd> !drvobj 8174e870
+Driver object (8174e870) is for:
+ \Driver\PCI
+Driver Extension List: (id , addr)
+
+Device Object list:
+81743cd0  81743030  81741a30  81741c30
+8175b630  81741e20  
+
+
+先看第一个，也就是Driver->DeviceObject指向的设备。
+
+kd> !devobj 81743cd0
+Device object (81743cd0) is for:
+ NTPNP_PCI0004 \Driver\PCI DriverObject 8174e870
+Current Irp 00000000 RefCount 0 Type 00000022 Flags 00001040
+DevExt 81743d88 DevObjExt 81743e68 DevNode 817436a8 
+ExtensionFlags (0000000000)  
+AttachedDevice (Upper) 817456d0 \Driver\DC21x4
+Device queue is not busy.
+
+
+在81743e68处，偏移0x20就是DevNode 817436a8。
+
+kd> dd 81743e68
+81743e68  0000000d 81743cd0 00000000 00000000
+81743e78  00000000 817436a8 00000000 00000000
+81743e88  00000000 00000000 00000000 00000000
+81743e98  00000000 00000000 0b018010 42696350
+81743ea8  00000300 00000000 04000000 04000000
+81743eb8  00000000 00000000 ffffffff 00000000
+81743ec8  00000000 00000000 00000000 00000000
+81743ed8  00000000 00000000 00000000 00000000
+
+DevNode的PDO又指回了0x81743cd0。同时我们也找到了它的兄弟和孩子:-)。
+
+kd> !devnode 817436a8
+DevNode 0x817436a8 for PDO 0x81743cd0
+  Parent 0x8175bf28   Sibling 0000000000   Child 0000000000
+  InstancePath is "PCI\VEN_1011&DEV_0009&SUBSYS_21140A00&REV_20\3&267a616a&0&50"
+  ServiceName is "DC21x4"
+  Flags (0x000421d8)  DNF_PROCESSED, DNF_ENUMERATED, 
+                      DNF_ADDED, DNF_HAS_BOOT_CONFIG, 
+                      DNF_BOOT_CONFIG_RESERVED, DNF_RESOURCE_ASSIGNED, 
+                      DNF_STARTED
+
+下面是它的兄弟们的关系。
+
+kd> !devnode 0x8174bb88
+DevNode 0x8174bb88 for PDO 0x8176b030
+  Parent 0x817395c8  Sibling 0000000000  Child 0000000000
+  InstancePath is "IDE\DiskVirtual_HD______________________________1._1____\5&35dc7040&0&0.0.0"
+  ServiceName is "disk"
+  Flags (0x00040458)  DNF_PROCESSED, DNF_ENUMERATED, 
+                      DNF_ADDED, DNF_NO_RESOURCE_REQUIRED, 
+                      DNF_STARTED
+  UserFlags (0x00000008)  DNUF_NOT_DISABLEABLE
+  DisableableDepends = 1 (including self)
+
+
+kd> !devnode 0x817395c8
+DevNode 0x817395c8 for PDO 0x81739c90
+  Parent 0x81743868  Sibling 0x817394e8  Child 0x8174bb88
+  InstancePath is "PCIIDE\IDEChannel\4&10bf2f88&0&0"
+  ServiceName is "atapi"
+  Flags (0x000421d8)  DNF_PROCESSED, DNF_ENUMERATED, 
+                      DNF_ADDED, DNF_HAS_BOOT_CONFIG, 
+                      DNF_BOOT_CONFIG_RESERVED, DNF_RESOURCE_ASSIGNED, 
+                      DNF_STARTED
+  UserFlags (0x00000008)  DNUF_NOT_DISABLEABLE
+  DisableableDepends = 2 (including self)
+
+
+kd> !devnode 0x81743868
+DevNode 0x81743868 for PDO 0x81741a30
+  Parent 0x8175bf28  Sibling 0x81743788  Child 0x817395c8
+  InstancePath is "PCI\VEN_8086&DEV_7111&SUBSYS_00000000&REV_01\3&267a616a&0&39"
+  ServiceName is "intelide"
+  Flags (0x000421d8)  DNF_PROCESSED, DNF_ENUMERATED, 
+                      DNF_ADDED, DNF_HAS_BOOT_CONFIG, 
+                      DNF_BOOT_CONFIG_RESERVED, DNF_RESOURCE_ASSIGNED, 
+                      DNF_STARTED
+  DisableableDepends = 1 (from children)
+
+
+kd> !devnode 0x81743788
+DevNode 0x81743788 for PDO 0x81743030
+  Parent 0x8175bf28  Sibling 0x817436a8  Child 0000000000
+  InstancePath is "PCI\VEN_5333&DEV_8811&SUBSYS_00000000&REV_00\3&267a616a&0&40"
+  ServiceName is "vpc-s3"
+  Flags (0x000421d8)  DNF_PROCESSED, DNF_ENUMERATED, 
+                      DNF_ADDED, DNF_HAS_BOOT_CONFIG, 
+                      DNF_BOOT_CONFIG_RESERVED, DNF_RESOURCE_ASSIGNED, 
+                      DNF_STARTED
+  UserFlags (0x00000008)  DNUF_NOT_DISABLEABLE
+  DisableableDepends = 1 (including self)
+
+
+kd> !devnode 0x817436a8
+DevNode 0x817436a8 for PDO 0x81743cd0
+  Parent 0x8175bf28  Sibling 0000000000  Child 0000000000
+  InstancePath is "PCI\VEN_1011&DEV_0009&SUBSYS_21140A00&REV_20\3&267a616a&0&50"
+  ServiceName is "DC21x4"
+  Flags (0x000421d8)  DNF_PROCESSED, DNF_ENUMERATED, 
+                      DNF_ADDED, DNF_HAS_BOOT_CONFIG, 
+                      DNF_BOOT_CONFIG_RESERVED, DNF_RESOURCE_ASSIGNED, 
+                      DNF_STARTED
+
+
+kd> !devnode 0x817395c8
+DevNode 0x817395c8 for PDO 0x81739c90
+  Parent 0x81743868  Sibling 0x817394e8  Child 0x8174bb88
+  InstancePath is "PCIIDE\IDEChannel\4&10bf2f88&0&0"
+  ServiceName is "atapi"
+  Flags (0x000421d8)  DNF_PROCESSED, DNF_ENUMERATED, 
+                      DNF_ADDED, DNF_HAS_BOOT_CONFIG, 
+                      DNF_BOOT_CONFIG_RESERVED, DNF_RESOURCE_ASSIGNED, 
+                      DNF_STARTED
+  UserFlags (0x00000008)  DNUF_NOT_DISABLEABLE
+  DisableableDepends = 2 (including self)
+
+
+kd> !devnode 0x817394e8
+DevNode 0x817394e8 for PDO 0x81739ab0
+  Parent 0x81743868  Sibling 0000000000  Child 0x8176b868
+  InstancePath is "PCIIDE\IDEChannel\4&10bf2f88&0&1"
+  ServiceName is "atapi"
+  Flags (0x000421d8)  DNF_PROCESSED, DNF_ENUMERATED, 
+                      DNF_ADDED, DNF_HAS_BOOT_CONFIG, 
+                      DNF_BOOT_CONFIG_RESERVED, DNF_RESOURCE_ASSIGNED, 
+                      DNF_STARTED
+
+
+kd> !devnode 0x8176b868
+DevNode 0x8176b868 for PDO 0x8176b350
+  Parent 0x817394e8  Sibling 0000000000  Child 0000000000
+  InstancePath is "IDE\CdRomMS_C/DVD-ROM____________________________3.0_____\5&cfb56de&0&0.0.0"
+  ServiceName is "cdrom"
+  TargetDeviceNotify List - f 0xe1257f48  b 0xe1ed65c8
+  Flags (0x00040458)  DNF_PROCESSED, DNF_ENUMERATED, 
+                      DNF_ADDED, DNF_NO_RESOURCE_REQUIRED, 
+                      DNF_STARTED 
+
+2   问题
+
+本方法也存在问题。首先0x20的偏移并不是稳定的。当然我们也有办法，搜索DevObjExt指向的内存如果某个
+地址值又指了回来，那么这个地址到DevObjExt就是偏移。不过，搜索内存依然有风险。

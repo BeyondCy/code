@@ -1,0 +1,291 @@
+文档名称：TPlayer项目经验杂谈
+文档维护：Xuefeng Chang(welfear@gmail.com)
+文档创建：2012.2.1
+
+
+handle
+
+
+由于现代操作系统在设计上需要实现避免应用程序直接访问内核数据，因此任何一种
+操作系统都需要提供一种间接表示各种系统资源的标识。这种标识在NT就是Handle，
+在Linux上就是fd table。NT提供统一的内核对象访问方法，NT中的各种内核资源都
+用内核对象表示，而Handle就是它们在内核数据表中的下标。在Win32 API中使用的
+HWND句柄却是例外，这和Win32设计方案的历史变迁有关。Linux并没有提供统一的机制，
+在Linux中file system有一套机制，而IPC使用的idr则是另一套机制。idr被放在了lib
+目录中，显然它是更通用的方案。
+
+NT4的Handle机制实现是最简单的，它只根据当前所需表的大小分配内存。每当Handle
+数目增加或减少时，它会释放旧的并重新分配新的表。经历多次改写之后，NT5的Handle
+机制使用了类似i386 MMU的多级表，整个结构变得非常精巧。与MMU不同的是NT必须考虑
+频繁的分配与释放问题，因为操作系统还需要管理空闲项，因此每个句柄表中还存在一个
+空闲项头，将空闲项链接起来。每次查找只需固定次数便能定位对应的内核对象位置。
+多级表并不占用多余内存，设计者尽量把多级项都放入同一页中，通常情况下页中既有
+数据指针又有多级索引，以保证未使用的内存最多一页。
+
+N.B. Handle只有24位用作索引，每8位为1级，共3级。Handle中的最低两位保留给应用
+程序使用。但微软并不鼓励第三方应用使用这两位保留位，主要使用这两位的是Windows
+提供的系统应用程序，比如csrss.exe。csrss用于兼容遵守POSIX标准的操作系统下的
+console程序。POSIX规定了文件的标准输入、输入和出错的文件描述符为0, 1, 2。因此
+Handle值最好可以与之区分，否则csrss虚拟出的控制台就需要额外的数据记录真实的
+文件句柄和虚拟的文件描述符。为了避免混乱，NT的CreateXxx API中只有CreateFile
+的出错返回值是-1，而不是NULL。
+
+N.B. PID也是Handle，因此任务管理器中观察到的PID值都是4的倍数。
+
+Win32的Hwnd是窗口管理的全局性id，并且每个Desktop内有固定数目限制。Handle表的
+首地址记录在每个进程控制块内，且每个进程只有一个，此外，系统中还有一个进程表、
+一个线程表和一个内核表。Hwnd表只有一个，每个UI Thread会通过Section对象映射
+句柄表，应用程序读表，图形引擎写表。这是为了提高Win32图形引擎的运行效率，处理
+冲突的方式也很简单，每次多分配一页内存的新表并复制旧表。
+
+N.B. 最初的NT版本NT 3.5的图形系统采用了类似X11的C/S结构。Win32, OS/2, POSIX都
+将作为NT的子系统，所有的子系统应用程序通过加载特定的dll将API请求发送给模拟该
+内核结构的系统进程。这一方案颇具争议，设计者们普遍最担心性能问题。果然，在NT4
+中Win32的主体部分由csrss进程移植进内核并作为PnP驱动实现。MSDN中的NT4主要改变
+中，设计者指出即使已经努力减少可能的交互，但毫秒级的进程切换仍会导致性能问题。
+时至今日，Linux桌面开发者为之津津乐道的X Window System也终于有了被Wayland替代
+的趋势。笔者既感叹历经二十多年的X11设计，又惋惜因此而推迟的技术革命出现时间。
+
+N.B. GUI框架同样有类似查找过程，比如MFC, Qt都需要由Hwnd找到对应的C++对象。但
+MFC和Qt并没有使用系统表，而是使用自己的映射表。MFC用CMap，更有意思的是MFC作者
+在代码中写道CMap的Hash算法取自STL的xfunctional。默认表大小为质数17，用开链法
+解决冲突。当看到Qt的QMap查找函数实现是用for嵌套了while，笔者便失去了阅读兴趣。
+值得一提的是WTL的实现方式，用Get/SetWindowLongEx将对象信息与窗口句柄巧妙联系
+在一起，复用了系统方案并获得了最好的效率。
+
+
+memory
+
+
+内存管理器是内核中最基础的部分，它必须满足系统中其它组件对各种用法和用途的
+内存需求。更有意思的是，按照Ln速度和容量的分级理论，内存处在高速处理器缓存
+和慢速外部设备之间，它对系统的效率和性能的影响都是不容忽视的。
+主板上的内存并不全是可用的，低处有640KB内存存在“历史遗留问题”，而高处还要
+为各种设备和ACPI预留部分地址。内核通过调用BIOS得到计算机内存的e820图得到相关
+信息（BIOS厂商会给计算机生厂商预留修改BIOS的接口）。物理内存需要通过MMU映射
+为虚拟地址后才可以使用。一般Linux中内核态的物理地址+0xC0000000便是虚拟地址，
+这个简化也影响了Linux的内存管理算法。内存管理的算法很多，但基本上还是使用
+位图和链表两种基本的数据结构。这些算法需要在速度、外碎片、内碎片、内存利用率
+之间作出取舍，它们的思想早在上世纪六十年代便已产生，Doug Lea在八十年代末写出
+用于早期glibc的dlmalloc，Jeff Bonwick在九十年代初实现了Slab算法。请参考：
+<Dynamic Storage Allocation: A Survey and Critical Review>
+
+N.B. 文件系统存在相似的情形，它们同样常用bitmap和list，复杂的文件系统会用
+B-Tree或B+ Tree。例如FAT文件系统，它是Bill Gates和Marc McDonald在1976年开发的，
+其核心思想FAT来源于简单的链表数组。
+
+批发：
+
+Linux用Buddy System算法管理页级内存批发工作。伙伴算法速度很快(O(logN))，
+但可能产生的内碎片也容易很大（它只能分配页数为2的幂次）。
+
+N.B. Buddy System是指Binary Buddy System。伙伴系统有很多种，最常见的依次
+按2的幂次大小组成的二进制伙伴系统。
+
+NT使用一种改良的first-fit策略的空闲链表算法(freelist)，降低了速度而减少
+碎片。页分配算法有一定的特殊限制，它的分配大小固定，并且需要首地址按页
+大小对齐。常用于堆内存分配算法，比如first-fit/best-fit，需要在分配内存块
+之前放入一些管理数据，而页分配中不允许这样做。
+
+N.B. 比如在Windows中，malloc返回地址减16字节处是堆块实际分配的内存大小，
+malloc返回地址减14字节处便是它前一个块的实际内存大小，如果它是0，那么
+malloc返回地址减12字节处一定是1。如果修改这些管理数据，那么最好的结果
+恐怕就是程序马上崩溃掉，尽管堆可能会用0xbeadbeef之类的方法检查一下。
+
+页分配算法更需要考虑内存回收时的合并方法，这关系到碎片的数目。伙伴算法巧妙
+的解决了这个问题，NT使用的freelist算法只能在空闲页首放置管理数据，而页回收
+时，它如何得知前后页状态呢？这个问题可以简单理解为NT在页对应的PTE保留位中
+设置了分配信息，释放时如果NT发现相邻的页都是空闲，那么它会利用空闲页首的
+数据合并相邻的内存块。
+
+N.B. NT registry也用空闲链表管理注册表的Key和Value。它和页分配类似，需要
+分配固定大小并按块大小对齐的块，所以它没有空间放置块前的管理结构，又由于
+它的大小不固定也没有bitmap，所以它只有扩展和查找操作，没有合并操作。
+
+在分配页时，NT考虑了分配页对处理器高速缓存的影响，也就是使用PageColor技术。
+现代处理器按物理地址缓存，这就有可能会使虚拟地址相邻页同时竞争相同的缓存。
+Linux没有PageColor机制，而FreeBSD、Solaris10都支持。不支持的理由很简单，
+现在主流处理器Cache都是关联的，所以性能提升并不大，而且实现起来也复杂，
+用虚拟地址Cache的处理器没这个问题。Linux使用的Slab算法考虑了Cache性能因素。
+NT将内存分成两部分，一部分保留给内核使用，另一部分按需分配。保留给内核的
+内存又分成两部分，一部分组成分页内存池，另一部分组成非分页内存。内核会
+按照系统内存总数计算它们的大小，一般为几十兆，典型值为48MB。分页内存池用
+bitmap管理，bitmap速度比较慢(O(N))。非分页内存可以被扩展，用freelist管理。
+按需分配的内存用list管理，它支持页的加入和剔除。
+
+N.B. 非分页内存池和分页内存池的算法并不相同。分页内存池的内存可能被分页，
+因此空闲页首页不能放置管理结构。只好使用简单并有效的位图管理大小固定的
+分页内存池，而管理分页内存池的bitmap是放在非分页内存池中。
+
+Linux和NT的内存管理有一个重要的区别，Linux管理的是物理地址连续的内存，而
+NT管理的是虚拟地址连续的内存。简单的说，NT利用MMU机制减少内存碎片，这会
+频繁操作页表而使CPU同步TLB，另一方面，分配不连续的物理内存会降低TLB命中率，
+两者都会影响系统性能。因此，频繁使用的内存应该在非分页内存中分配。
+
+FIXME. Linux hugetlbpage. 有些处理器支持巨型TLB，这项技术可提高TLB命中率。
+
+如果某个该死的驱动要求很多连续的内存怎么办？因为非分页内存池中的内存是
+建立时就已经完成映射的，因此内核函数MmAllocateContiguousMemory会先去搜索
+这个区域，如果没找到，那么它将会暴力搜索其它内存分配区域，这可能是个漫长
+的过程。扩展的分页内存池只是为了满足某些临时没有合适内存块分配的情况，它
+需要先找到合适系统PTE，再一页页设置好映射关系。
+
+N.B. NT5对freelist进行了优化，将单一的freelist分成1页、2页、3页、多于3页
+4组空闲链表加快查找速度，并针对单页内存另设置了缓冲列表(smallest-first,
+best-fit order)。
+
+零售：
+
+NT中存在若干种类的内存分配策略，它们的原理大致相同，并都取自上述的非分页
+内存池和分页内存池。NT的“零售”算法修改自伙伴系统，这种算法同样应用在
+进程堆，只不过进程堆需要实现更多的特性和功能。系统中经常进行的交易是零售，
+NT中，这两种行为是按页大小划分的。NT为每种内存策略都设置了8个空闲链表用于
+小于页大小的内存分配；对于小于512字节的内存分配，也有8个链表，但不是
+freelist，而是lookaside。
+
+N.B. NT5开始小于512字节的内存分配并不从统一链表上获取，而是从当前CPU控制块
+中获取，这显然是希望提高CPU Cache的命中率。同样，小内存块的最小分配单位是
+32字节也是为了防止多CPU Cache的false sharing问题。
+
+与伙伴系统不同的是，NT按照倍数而不是指数安排空闲列表。小内存列表按照32字节
+的倍数排列，而大内存列表按照512字节的倍数排列。分配的内存块前包含8字节的
+管理数据。lookaside用于相同内存块的分配，它是一种包含深度信息的单链表，
+而freelist中的内存块大小则并不固定，但内存块的大小有范围限制。
+
+Linux参考了Solaris的Slab算法管理零售行为，Linux中存在三种相似的算法：slab、
+slub、slob。Slab实际上有Cache和Slab两种管理数据结构，Slab优化特定大小的数据
+分配。系统中经常需要大量特定大小的数据结构，每种Cache管理一种特定内存大小的
+分配，Cache用三个链表（满、半满、闲）管理Slab，每个Slab包含若干个该特定大小
+的内存块，Slab用数组管理内存块。Slab中数组的个数与特定内存块的大小有关，大小
+没有限制。Slab算法对特定结构管理得快又好，但对通用的内存分配就没那么完美。
+Linux为一般内存分配函数kmalloc从32字节开始按2幂指数设置若干个Cache。kmalloc
+有大小限制，但至少可以分配16个页，更多内存需要用vmalloc分配，vmalloc分配的
+内存是虚拟地址连续的。对kmalloc使用不当可能会造成过多的内存碎片。
+
+
+debug
+
+
+Windows CRT支持两种堆内存调试模式：
+
+进程模式
+
+在VC Debug模式下，Crt的调试功能是开启的，应用程序需要调用：
+_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
+
+使Crt在进程退出时自动打印堆内存信息，或是手动调用：
+_CrtDumpMemoryLeaks();
+
+打印内存信息。当前内存泄漏发生时，它会打印出：
+{62} normal block at 0x038E7100, 28 bytes long.
+Data: <D7> 44 37 BB 01 05 00 00 00 05 00 00 00 01 00 00 00
+
+其中62是堆块id，0x038E7100是当前堆内存首地址，28是块大小。因此在内存泄漏
+稳定发生的情况下可以直接调用：
+_CrtSetBreakAlloc(62);
+
+Crt会在它分配第62个块时通知调试器，那么我们就可以直接找到产生泄漏的语句。
+
+系统模式
+
+更一般的情况是借助Verifier和Windbg找到原因。Appliaction Verifier, pageheap,
+gflags通过设置注册表使Crt记录更详尽的内存分配信息。例如：
+gflags /ust name
+
+当然它们不只是用来调试内存泄漏问题。设置好调试程序路径后再次用VC启动程序，
+通常symbos路径设置为：
+srv*c:\symbols*http://msdl.microsoft.com/download/symbols
+
+在_CrtDumpMemoryLeaks处设置断点，在内存泄漏信息打印后用Windbg以noninvasively
+方式attach process，并用：
+!heap -p -a 0x038E7100
+
+打印当时调用栈信息，再找到程序内函数地址，用命令：
+lsa PCPlayer!wmain+0x00000044
+
+找到分配内存语句。这种模式也可用来监视进程的内存使用状态：
+umdh -pn:name f:t1
+umdh -pn:name f:t2
+umdh t1 t1 > diff.txt
+
+两次umdh命令会为当前进程记录下堆内存的使用状态，一般情况下这两次命令用在
+进程使用内存出现峰值之前和之后。第三条命令用于对比出文件t1和t2两个时刻的内存
+分配信息，这时对比出的内存分配就有可能是内存泄漏或内存浪费。如果内存缓慢泄漏
+则可使用umdhplus，它会在一定时间内每秒记录一次堆内存使用情况，最后生成可排序
+统计数据的HTML文档。
+
+N.B. 用taskmgr观察进程内存使用时，需要注意各种指标的区别：
+virtual memory: 当前进程的所有使用内存。
+working set:    当前进程在物理内存中内存。
+private bytes:  当前进程私有内存，不包括共享dll内存。
+
+BUG实例：TPlayer在全屏时不响应Win+D。
+Win+D是ShowDesktop的快捷键，由explorer发送。而explorer给哪个窗口发送则
+完全不得而知。另外一个可能是Qt过滤掉了某个消息。
+
+现在的问题转换为：
+explorer到底发没发消息？
+explorer发送了什么消息？
+Qt可能过滤掉了什么消息？
+为什么其它播放器可以在TopMost条件下工作？
+
+笔者首先找到了Windows八卦的终极指南<The Old New Thing>，
+上面提到了Win+M和Win+D两个功能的差异，最有价值的信息是这句：
+"Show Desktop" takes "Minimize All" one step further.
+After minimizing all the windows that can be minimized,
+it then takes the desktop and "raises" it to the top of
+the window stack so that no other windows cover it.
+(Well, okay, topmost windows continue to cover it.)
+
+当时笔者只注意到topmost的描述，事实上这句是过时的，XP上
+topmost窗口也会被最小化。但事后看，如果我注意到前半句，
+问题马上就解决了。
+
+笔者又把视线转移到Qt上，把showFullScreen()注释掉，直接设置窗口为全屏，
+发现一切正常。猜测是调用了showFullScreen之后Qt设置了Qt::WindowFullScreen
+标志，而这个标志过滤了什么消息。于是开始分析Qt的源代码，可除了发送Qt可能
+是用Vim编辑的八卦以外，没有发现其他有价值的线索。
+
+至此笔者不得不从Win+D本身找线索，explorer一定是用Win32 API使窗口最小化的。
+可这种最小化方式和普通的方式并不一样，Win+D可以使所有窗口同时最小化，
+而最小化并没有动画效果。普通的ShowWindow产生最小化动画。搜索MSDN发现
+ShowWindowAsync，上面提到它与ShowWindow的异同，猜测ShowWindow都会发送
+WM_SIZE通知窗口。于是在winEvent中设置断点，没有触发。又在evernFilter
+中设置断点，依然没有触发。可eventFilter是窗口过程的第一站，Qt是不会在
+这之前做什么的。所以我又怀疑这可能不是Qt的问题，但又和Qt有关。
+
+于是笔者又重新看Old New Thing上的这句话，它的半句过时了但前半句未必，
+"windows that can be minimized"，到底它认为什么可最小化 的窗口？试着在
+showFullScreen之后为窗口添加WS_MINIMIZEBOX，这个问题便解决了。因此XP的
+Win+D策略应该是最小化所有非topmost窗口和带有WS_MINIMIZEBOX的topmost窗口。
+Qt在全屏时去掉了WS_MINIMIZEBOX从而产生这个BUG。
+
+
+optimize:
+
+
+0.use stack instead of heap.
+
+1.use gperftools:
+Google提供的gperftools适用于频繁分配释放堆内存的程序。它支持多种操作系统平台
+并提供tcmalloc和heap checker, heap profiler。tcmalloc为每个线程提供了单独的
+线程池，避免多线程锁竞争。对于大于32K的内存按页分配内存，小于按2的倍数分配。
+
+2.use int:
+避免类型转换带来的消耗。
+
+3.use switch, and place frequent case labels first.
+
+4.adjust structure sizes to power of two.
+
+5.don't use 0.
+mov eax, 0 -> xor eax, eax
+
+6.use tips:
+for (count = 0; x; x &= x - 1) count++;
+
+
+window
+
+
+FIXME.

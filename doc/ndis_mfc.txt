@@ -1,0 +1,302 @@
+NDIS && MFC
+Xuefeng Chang(welfear@gmail.com)
+2009
+
+NDIS的一点发现：
+出现在托盘里的本地连接状态图标在本地网卡每次有数据报通信的时候就会发生明暗变化。
+点击图标后会弹出连接信息和状态信息。其中状态信息包括发送数据包数和接收数据包数。
+但奇怪的是这些数据并不是通过iphlpapi.dll里的相关函数获得的。而获得这类数据不外乎有
+两个地方，一个是TDI驱动，一个是Miniport驱动。简单的ping localip测试发现数据包数并
+没有增长。不过这并不能区分。又用winpcap发送arp包测试，发现这次本地发送包数增加了。
+由于winpcap是使用协议驱动实现的，所以状态信息应该是使用miniport驱动获得的。
+下一步验证想法：
+
+bp ndis!NdisMRegisterMiniport
+
+NdisMRegisterMiniport的第三个参数是大小,第二个参数是设置的回调函数。
+
+kd> dd esp
+f9d007bc  f9c2d532 82138d30 f9d007d0 00000060
+f9d007cc  00000000 80560005 8054c0e1 f9c2a84e
+f9d007dc  f9c29322 f9c29300 f9c2a770 f9c2985a
+f9d007ec  f9c2cf00 f9c29342 f9c2c5be 00000000
+f9d007fc  f9c2a490 f9c2c430 f9c2c99e f9c294f4
+f9d0080c  00000000 f9c2c464 00000000 00000000
+f9d0081c  00000000 00000000 00000000 00000000
+f9d0082c  00000000 f9d00900 805a79d3 82137ce0
+
+很明显长度是0x60，而f9d007d0是回调结构的地址。
+
+kd> dd f9d007d0
+f9d007d0  80560005 8054c0e1 f9c2a84e f9c29322
+f9d007e0  f9c29300 f9c2a770 f9c2985a f9c2cf00
+f9d007f0  f9c29342 f9c2c5be 00000000 f9c2a490
+f9d00800  f9c2c430 f9c2c99e f9c294f4 00000000
+f9d00810  f9c2c464 00000000 00000000 00000000
+f9d00820  00000000 00000000 00000000 00000000
+f9d00830  f9d00900 805a79d3 82137ce0 82138d30
+f9d00840  00000000 00000000 f9d00a70 00000018
+
+计算了一下偏移量，第十个就是QueryInformation的地址。
+
+kd> u f9c2a84e
+RTL8139!RTFast_CheckForHang:
+f9c2a84e 55              push    ebp
+f9c2a84f 8bec            mov     ebp,esp
+f9c2a851 53              push    ebx
+f9c2a852 56              push    esi
+f9c2a853 8b7508          mov     esi,dword ptr [ebp+8]
+f9c2a856 33db            xor     ebx,ebx
+f9c2a858 389ee00a0000    cmp     byte ptr [esi+0AE0h],bl
+f9c2a85e 7428            je      RTL8139!RTFast_CheckForHang+0x3a (f9c2a888)
+kd> u f9c2c5be
+RTL8139!RTFast_QueryInformation:
+f9c2c5be 55              push    ebp
+f9c2c5bf 8bec            mov     ebp,esp
+f9c2c5c1 83ec30          sub     esp,30h
+f9c2c5c4 8b451c          mov     eax,dword ptr [ebp+1Ch]
+f9c2c5c7 53              push    ebx
+f9c2c5c8 56              push    esi
+f9c2c5c9 57              push    edi
+f9c2c5ca 6a04            push    4
+kd> bp f9c2c5be
+
+kd> g
+Breakpoint 0 hit
+NDIS!NdisMRegisterMiniport:
+f96ff3d5 8bff            mov     edi,edi
+
+在OID为OID_GEN_DIRECTED_BYTES_RCV时，miniport返回网卡接收的字节数。
+
+kd> g
+Breakpoint 1 hit
+RTL8139!RTFast_QueryInformation:
+f9c2c5be 55              push    ebp
+kd> k
+ChildEBP RetAddr  
+f543a9e8 f970b997 RTL8139!RTFast_QueryInformation
+f543aa14 f970ba3f NDIS!ndisMDispatchRequest+0x135
+f543aa3c f96f8cf0 NDIS!ndisMDoRequests+0x348
+f543aa54 f96f9272 NDIS!ndisQuerySetMiniport+0x170
+f543aa70 f96f8efc NDIS!ndisQueryDeviceOid+0x33
+f543ab34 f96f9172 NDIS!ndisQueryStatisticsOids+0x41a
+f543abec 804e4d77 NDIS!ndisDeviceControlIrpHandler+0x1bd
+f543abfc 8056b9ab nt!IopfCallDriver+0x31
+f543ac10 8057e9f7 nt!IopSynchronousServiceTail+0x60
+f543acb8 80580bfa nt!IopXxxControlFile+0x611
+f543acec f77655d8 nt!NtDeviceIoControlFile+0x2a
+WARNING: Stack unwind information not available. Following frames may be wrong.
+f543ad34 804e006b klif+0x105d8
+f543ad34 7c92eb94 nt!KiFastCallEntry+0xf8
+0113f7b8 7c92d8ef ntdll!KiFastSystemCallRet
+0113f7f4 7c92dd09 ntdll!ZwDeviceIoControlFile+0xc
+0113f820 00000000 ntdll!NtOpenFile+0xc
+kd> !peb
+PEB at 7ffd5000
+Base TimeStamp                     Module
+1000000 41107ece Aug 04 14:14:38 2004 F:\WINDOWS\Explorer.EXE
+7c920000 4121457c Aug 17 07:38:36 2004 F:\WINDOWS\system32\ntdll.dll
+7c800000 4121457c Aug 17 07:38:36 2004 F:\WINDOWS\system32\kernel32.dll
+
+每次explorer都是通过ndis来派发请求，ndis接收IOCTL_NDIS_QUERY_GLOBAL_STATS指令然后向
+miniport驱动发送OID得到发送和接收的字节数。
+
+kd> k
+ChildEBP RetAddr  
+f9d007b8 f99bc5c3 NDIS!NdisMRegisterMiniport
+f9d00830 805a79d3 rasl2tp!DriverEntry+0x7a
+f9d00900 805c9dde nt!IopLoadDriver+0x66c
+f9d00944 80592ce3 nt!PipCallDriverAddDeviceQueryRoutine+0x235
+f9d00990 80593434 nt!RtlpCallQueryRegistryRoutine+0x3b1
+f9d009f4 805aedac nt!RtlQueryRegistryValues+0x2a6
+f9d00ac8 805aeead nt!PipCallDriverAddDevice+0x261
+f9d00d24 805aef12 nt!PipProcessDevNodeTree+0x1a4
+f9d00d4c 8050ce62 nt!PiProcessStartSystemDevices+0x3a
+f9d00d74 804e57fe nt!PipDeviceActionWorker+0x166
+f9d00dac 8057efed nt!ExpWorkerThread+0x100
+f9d00ddc 804fb477 nt!PspSystemThreadStartup+0x34
+00000000 00000000 nt!KiThreadStartup+0x16
+kd> g
+Breakpoint 0 hit
+NDIS!NdisMRegisterMiniport:
+f96ff3d5 8bff            mov     edi,edi
+kd> k
+ChildEBP RetAddr  
+f9d007a4 f8acf6f5 NDIS!NdisMRegisterMiniport
+f9d0081c f8acf61a ndiswan!DoMiniportInit+0x98
+f9d00830 805a79d3 ndiswan!DriverEntry+0x2b3
+f9d00900 805c9dde nt!IopLoadDriver+0x66c
+f9d00944 80592ce3 nt!PipCallDriverAddDeviceQueryRoutine+0x235
+f9d00990 80593434 nt!RtlpCallQueryRegistryRoutine+0x3b1
+f9d009f4 805aedac nt!RtlQueryRegistryValues+0x2a6
+f9d00ac8 805aeead nt!PipCallDriverAddDevice+0x261
+f9d00d24 805aef12 nt!PipProcessDevNodeTree+0x1a4
+f9d00d4c 8050ce62 nt!PiProcessStartSystemDevices+0x3a
+f9d00d74 804e57fe nt!PipDeviceActionWorker+0x166
+f9d00dac 8057efed nt!ExpWorkerThread+0x100
+f9d00ddc 804fb477 nt!PspSystemThreadStartup+0x34
+00000000 00000000 nt!KiThreadStartup+0x16
+kd> g
+Breakpoint 0 hit
+NDIS!NdisMRegisterMiniport:
+f96ff3d5 8bff            mov     edi,edi
+kd> k
+ChildEBP RetAddr  
+f9d007b8 f99c31d7 NDIS!NdisMRegisterMiniport
+f9d0081c f99ca11b raspppoe!MpRegisterMiniport+0x6d
+f9d00830 805a79d3 raspppoe!DriverEntry+0x15
+f9d00900 805c9dde nt!IopLoadDriver+0x66c
+f9d00944 80592ce3 nt!PipCallDriverAddDeviceQueryRoutine+0x235
+f9d00990 80593434 nt!RtlpCallQueryRegistryRoutine+0x3b1
+f9d009f4 805aedac nt!RtlQueryRegistryValues+0x2a6
+f9d00ac8 805aeead nt!PipCallDriverAddDevice+0x261
+f9d00d24 805aef12 nt!PipProcessDevNodeTree+0x1a4
+f9d00d4c 8050ce62 nt!PiProcessStartSystemDevices+0x3a
+f9d00d74 804e57fe nt!PipDeviceActionWorker+0x166
+f9d00dac 8057efed nt!ExpWorkerThread+0x100
+f9d00ddc 804fb477 nt!PspSystemThreadStartup+0x34
+00000000 00000000 nt!KiThreadStartup+0x16
+kd> g
+Breakpoint 0 hit
+NDIS!NdisMRegisterMiniport:
+f96ff3d5 8bff            mov     edi,edi
+kd> k
+ChildEBP RetAddr  
+f9d007d0 f99db9c8 NDIS!NdisMRegisterMiniport
+f9d00830 805a79d3 raspptp!DriverEntry+0x89
+f9d00900 805c9dde nt!IopLoadDriver+0x66c
+f9d00944 80592ce3 nt!PipCallDriverAddDeviceQueryRoutine+0x235
+f9d00990 80593434 nt!RtlpCallQueryRegistryRoutine+0x3b1
+f9d009f4 805aedac nt!RtlQueryRegistryValues+0x2a6
+f9d00ac8 805aeead nt!PipCallDriverAddDevice+0x261
+f9d00d24 805aef12 nt!PipProcessDevNodeTree+0x1a4
+f9d00d4c 8050ce62 nt!PiProcessStartSystemDevices+0x3a
+f9d00d74 804e57fe nt!PipDeviceActionWorker+0x166
+f9d00dac 8057efed nt!ExpWorkerThread+0x100
+f9d00ddc 804fb477 nt!PspSystemThreadStartup+0x34
+00000000 00000000 nt!KiThreadStartup+0x16
+
+NDIS!NdisMRegisterMiniport:
+f96ff3d5 8bff            mov     edi,edi
+kd> k
+ChildEBP RetAddr  
+f9d007b4 f9c5c279 NDIS!NdisMRegisterMiniport
+f9d00830 805a79d3 raspti!DriverEntry+0x79
+f9d00900 805c9dde nt!IopLoadDriver+0x66c
+f9d00944 80592ce3 nt!PipCallDriverAddDeviceQueryRoutine+0x235
+f9d00990 80593434 nt!RtlpCallQueryRegistryRoutine+0x3b1
+f9d009f4 805aedac nt!RtlQueryRegistryValues+0x2a6
+f9d00ac8 805aeead nt!PipCallDriverAddDevice+0x261
+f9d00d24 805aef12 nt!PipProcessDevNodeTree+0x1a4
+f9d00d4c 8050ce62 nt!PiProcessStartSystemDevices+0x3a
+f9d00d74 804e57fe nt!PipDeviceActionWorker+0x166
+f9d00dac 8057efed nt!ExpWorkerThread+0x100
+f9d00ddc 804fb477 nt!PspSystemThreadStartup+0x34
+00000000 00000000 nt!KiThreadStartup+0x16
+
+
+函数OnWndMsg处理发送到本窗口的消息。
+BOOL CWnd::OnWndMsg(UINT message, WPARAM wParam, LPARAM lParam, LRESULT* pResult);
+WindowProc调用OnWndMsg，如果OnWndMsg没有处理此消息，则把消息交给DefWindowProc处理。
+OnWndMsg根据各个派生类里的消息处理函数表调用实际的处理函数。
+在派生类的头文件里使用BEGIN_MESSAGE_MAP声明。
+
+#define DECLARE_MESSAGE_MAP() \
+protected: \
+	static const AFX_MSGMAP* PASCAL GetThisMessageMap(); \
+    __override const AFX_MSGMAP* GetMessageMap() const; \
+
+在派生类的实现文件里的BEGIN_MESSAGE_MAP和END_MESSAGE_MAP之间添加消息映射函数。
+
+#define BEGIN_MESSAGE_MAP(theClass, baseClass) \
+	PTM_WARNING_DISABLE \
+	const AFX_MSGMAP* theClass::GetMessageMap() const \
+		{ return GetThisMessageMap(); } \
+	const AFX_MSGMAP* PASCAL theClass::GetThisMessageMap() \
+	{ \
+		typedef theClass ThisClass;						   \
+		typedef baseClass TheBaseClass;					   \
+		static const AFX_MSGMAP_ENTRY _messageEntries[] =  \
+		{
+
+#define END_MESSAGE_MAP() \
+		{0, 0, 0, 0, AfxSig_end, (AFX_PMSG)0 } \
+	}; \
+		static const AFX_MSGMAP messageMap = \
+		{ &TheBaseClass::GetThisMessageMap, &_messageEntries[0] }; \
+		return &messageMap; \
+	}								  \
+	PTM_WARNING_RESTORE
+
+在它们之间使用ON_WM_CREATE()、ON_COMMAND等宏添加处理函数。
+
+#define ON_WM_CREATE() \
+{ WM_CREATE, 0, 0, 0, AfxSig_is, \
+(AFX_PMSG)(AFX_PMSGW)(int (AFX_MSG_CALL CWnd::*)(LPCREATESTRUCT))&OnCreate },
+
+#define ON_COMMAND(id, memberFxn) \
+{ WM_COMMAND, CN_COMMAND, (WORD)id, (WORD)id, AfxSig_vv, (AFX_PMSG)&memberFxn },
+
+这样在每个派生类里都形成了一个静态消息处理函数表，并指明了基类的映射表。
+通过遍历每个派生类的映射表就可以找到客户类中设置的消息处理函数。
+
+如果派生类重载了虚函数PreTranslateMessage，那么在处理消息函数之前，会有
+如下函数栈调用顺序：
+CWnd::PreTranslateMessage
+CFrameWnd::PreTranslateMessage
+CWnd::WalkPreTranslateTree
+CWinThread::PreTranslateMessage
+CWinThread::PumpMessage
+CWinThread::Run
+CWinApp::Run
+
+CDialog利用PreTranslateMessage的这个特点实现了它的设计需求。
+
+BOOL CDialog::PreTranslateMessage(MSG* pMsg)
+{
+	// for modeless processing (or modal)
+	ASSERT(m_hWnd != NULL);
+
+	// allow tooltip messages to be filtered
+	if (CWnd::PreTranslateMessage(pMsg))
+		return TRUE;
+
+	// don't translate dialog messages when in Shift+F1 help mode
+	CFrameWnd* pFrameWnd = GetTopLevelFrame();
+	if (pFrameWnd != NULL && pFrameWnd->m_bHelpMode)
+		return FALSE;
+
+	// fix around for VK_ESCAPE in a multiline Edit that is on a Dialog
+	// that doesn't have a cancel or the cancel is disabled.
+	if (pMsg->message == WM_KEYDOWN &&
+		(pMsg->wParam == VK_ESCAPE || pMsg->wParam == VK_CANCEL) &&
+		(::GetWindowLong(pMsg->hwnd, GWL_STYLE) & ES_MULTILINE) &&
+		_AfxCompareClassName(pMsg->hwnd, _T("Edit")))
+	{
+		HWND hItem = ::GetDlgItem(m_hWnd, IDCANCEL);
+		if (hItem == NULL || ::IsWindowEnabled(hItem))
+		{
+			SendMessage(WM_COMMAND, IDCANCEL, 0);
+			return TRUE;
+		}
+	}
+	// filter both messages to dialog and from children
+	return PreTranslateInput(pMsg);
+}
+
+这样一来DoModule就只有IDOK和IDCANCEL两个返回值了。
+
+CFrameWnd重载了OnCmdMsg，所以MFC可以跨过View、Frame、Doc之间传递消息。
+Frame会先View后Doc的顺序发送消息。
+CFrameWnd::OnCmdMsg会先调用GetActiveView得到View的指针，调用它的OnCmdMsg，
+然后调用自己的OnCmdMsg函数，最后使用AfxGetApp调用CWinApp的OnCmdMsg，并在DisptachCmdMsg里
+把消息发送到Doc的OnCmdMsg中。
+
+CWinApp调用AfxWinMain。AfxWinMain调用AfxWinInit，接着调用AfxInitThread。
+AfxWinMain调用虚函数InitInstance，在我们的InitInstance中，我们创建了一个CFrameWnd。
+接下来Create窗口，再调用ShowWindow和UpdateWindow。最后在AfxWinMain中run进入消息循环。
+
+CWinApp::run中调用GetMessage得到消息再用DispatchMessage发送到CWnd::DefWindowProc中。
+在这里通过查找消息宏找到用户定义的消息处理函数。
+MFC使用AfxWndProc默认处理每个窗口的消息。AfxWndProc通过CWnd::FromHandlePermanent来
+查找窗口句柄对应的窗口类。CWnd::WindowProc调用OnWndMsg来分辨消息的种类。

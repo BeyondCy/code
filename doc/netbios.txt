@@ -1,0 +1,454 @@
+文档名称：Windows Netbios
+文档维护：Xuefeng Chang(welfear@gmail.com)
+创建时间：2008年11月15日
+
+
+目录
+
+
+0   背景
+
+1   实现
+
+2   协议
+
+3   过程
+
+
+0   背景
+
+Windows存在如下网络服务：
+
+RPC(远程过程调用)
+135端口是实现RPC的，RPC用于实现DCOM。远程计算机可以使用分布式COM运行在本地的COM组件。
+
+NetBios(microsoft的应用层协议)
+137、138端口实现了NetBios协议。在Windows NT中NetBios协议是通过tcp/ip协议基础上实现的。
+通过在TCP/IP协议属性中的高级，选择wins选项卡。选择是否启用NetBios协议。
+在windows内核中，137和138端口是通过system进程实现的。system进程是内核进程负责管理系统
+线程。用netstat -aon命令可以看到137、138的对应PID为4。NetBios协议用来管理工作组和域
+的信息。
+
+SMB(Server Message Block protocol)
+139、445端口是用来实现SMB协议的。SMB是在NetBios协议基础上实现的。Windows NT实现了两种
+通过SMB协议访问共享文件和打印机的方法。所以在Linux中安装SMB协议的相关软件就可以和
+Wndows NT相互访问了。
+
+
+1   实现
+
+
+Windows在发展过程中分别用两种方式实现了SMB协议：
+
+在应用层实现，13X端口对应的PID号不是4。它对应的是一个服务进程。它的名字是workstation。
+负责连接远程计算机。微软开发的WNet API接口使用Mpr.dll动态连接库使用RPC与workstation交换
+数据，workstation进入内核后用139端口发送SMB数据包实现文件和打印机的共享。
+
+在内核层实现，445端口对应的PID号也是4。微软又开发了一套名为Network Management的API接口。
+直接通过445端口发送SMB数据包实现共享。
+
+这两套接口都能实现相同的功能，但方法2在方法1之后，首次出现在windows 2000 server版中。
+所以我猜测微软是觉得以前应用层的方法效率低而改变了设计。然而这也就引起了用户使用上的
+混乱，尤其是在不同windows版本的系统共享中出现了很多“奇怪”的问题。
+在方法2出现后，windows的网上邻居总是首先使用方法2，如果不成功再试方法1，所以有时
+网上邻居会响应很慢。最后，workgroup和domain的概念在程序设计上没有区别，domain中的计算机
+在访问远程计算机时需要用户访问控制，也就是有严格的权限。由于Netbios协议是在局域网
+内广播的，所以方式1不能跨路由访问，而使用cifs协议的方式2可以。
+
+
+2   协议
+
+
+在以netbios协议和API接口为基础的Windows网络服务，扩展了netbios协议，在它的基础之上使用了
+SMB协议实现cifs。
+
+netbios协议在RFC的1001和1002文档中有详细的介绍。简单说明如下：
+
+netbios协议有netbios name service、netbios session service、netbios datagram service几种。
+其中：
+netbios name service使用UDP协议，并且源端口和目的端口都是137。
+netbios session service使用TCP协议，并且目的端口为139或是445（SMB协议使用）。
+netbios datagram service使用UDP协议，并且源端口和目的端口都是138。
+
+netbios name service是为了把局域网内的PC加以区分。它通常的内容就是
+加入一个名字、加入一个组名字、删除一个名字。
+netbios session service是为了实现一个可靠的数据交互环境。它通常的内容是
+呼叫、监听、挂断、发送、接收、状态。
+netbios datagram service是为了实现不连续的通信。它通常是为了
+发送数据报、发送广播、接收数据报、接收广播。
+
+name service和DNS协议结构很像。它们定义如下：
+
+                       1 1 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2 2 2 2 3 3
+   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |         NAME_TRN_ID           | OPCODE  |   NM_FLAGS  | RCODE |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |          QDCOUNT              |           ANCOUNT             |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |          NSCOUNT              |           ARCOUNT             |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+                       1 1 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2 2 2 2 3 3
+   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |      TYPE     |     FLAGS     |            LENGTH             |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                                                               |
+   /               TRAILER (Packet Type Dependent)                 /
+   |                                                               |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+                       1 1 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2 2 2 2 3 3
+   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |   MSG_TYPE    |     FLAGS     |           DGM_ID              |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                           SOURCE_IP                           |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |          SOURCE_PORT          |          DGM_LENGTH           |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |         PACKET_OFFSET         |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+SMB协议是基于Netbios Session Service实现。由于SMB是cifs的核心协议，所以它的结构
+定义在cifs.h中。SMB协议分为Header和Body两部分。
+
+在数据包的开头固定是0xFF 'S''M''B'。
+Command中经常出现的是
+#define SMB_COM_CREATE_DIRECTORY         (UCHAR)0x00
+#define SMB_COM_DELETE_DIRECTORY         (UCHAR)0x01
+#define SMB_COM_OPEN                     (UCHAR)0x02
+#define SMB_COM_CREATE                   (UCHAR)0x03
+#define SMB_COM_CLOSE                    (UCHAR)0x04
+#define SMB_COM_FLUSH                    (UCHAR)0x05
+#define SMB_COM_DELETE                   (UCHAR)0x06
+#define SMB_COM_RENAME                   (UCHAR)0x07
+#define SMB_COM_QUERY_INFORMATION        (UCHAR)0x08
+#define SMB_COM_SET_INFORMATION          (UCHAR)0x09
+#define SMB_COM_READ                     (UCHAR)0x0A
+#define SMB_COM_WRITE                    (UCHAR)0x0B
+#define SMB_COM_LOCK_BYTE_RANGE          (UCHAR)0x0C
+#define SMB_COM_UNLOCK_BYTE_RANGE        (UCHAR)0x0D
+#define SMB_COM_CREATE_TEMPORARY         (UCHAR)0x0E
+#define SMB_COM_CREATE_NEW               (UCHAR)0x0F
+#define SMB_COM_CHECK_DIRECTORY          (UCHAR)0x10
+#define SMB_COM_PROCESS_EXIT             (UCHAR)0x11
+#define SMB_COM_SEEK                     (UCHAR)0x12
+#define SMB_COM_LOCK_AND_READ            (UCHAR)0x13
+#define SMB_COM_WRITE_AND_UNLOCK         (UCHAR)0x14
+#define SMB_COM_READ_RAW                 (UCHAR)0x1A
+#define SMB_COM_READ_MPX                 (UCHAR)0x1B
+#define SMB_COM_READ_MPX_SECONDARY       (UCHAR)0x1C    // server to redir only
+#define SMB_COM_WRITE_RAW                (UCHAR)0x1D
+#define SMB_COM_WRITE_MPX                (UCHAR)0x1E
+#define SMB_COM_WRITE_MPX_SECONDARY      (UCHAR)0x1F
+#define SMB_COM_WRITE_COMPLETE           (UCHAR)0x20    // server to redir only
+#define SMB_COM_QUERY_INFORMATION_SRV    (UCHAR)0x21
+#define SMB_COM_SET_INFORMATION2         (UCHAR)0x22
+#define SMB_COM_QUERY_INFORMATION2       (UCHAR)0x23
+#define SMB_COM_LOCKING_ANDX             (UCHAR)0x24
+#define SMB_COM_TRANSACTION              (UCHAR)0x25
+#define SMB_COM_TRANSACTION_SECONDARY    (UCHAR)0x26
+#define SMB_COM_IOCTL                    (UCHAR)0x27
+#define SMB_COM_IOCTL_SECONDARY          (UCHAR)0x28
+#define SMB_COM_COPY                     (UCHAR)0x29
+#define SMB_COM_MOVE                     (UCHAR)0x2A
+#define SMB_COM_ECHO                     (UCHAR)0x2B
+#define SMB_COM_WRITE_AND_CLOSE          (UCHAR)0x2C
+#define SMB_COM_OPEN_ANDX                (UCHAR)0x2D
+#define SMB_COM_READ_ANDX                (UCHAR)0x2E
+
+#define SMB_COM_NEGOTIATE                (UCHAR)0x72
+#define SMB_COM_SESSION_SETUP_ANDX       (UCHAR)0x73
+#define SMB_COM_LOGOFF_ANDX              (UCHAR)0x74
+
+ErrorClass、Reserved、Error一起表示NtStatus。
+Flags有如下定义：
+
+#define SMB_FLAGS_LOCK_AND_READ_OK 0x01
+
+//
+// When on, the consumer guarantees that there is a receive buffer posted
+// such that a "Send.No.Ack" can be used by the server to respond to
+// the consumer's request.
+//
+
+#define SMB_FLAGS_SEND_NO_ACK 0x2
+
+//
+// This is part of the Flags field of every SMB header.  If this bit
+// is set, then all pathnames in the SMB should be treated as case-
+// insensitive.
+//
+
+#define SMB_FLAGS_CASE_INSENSITIVE 0x8
+
+//
+// When on in session setup, this bit indicates that all paths sent to
+// the server are already in OS/2 canonicalized format.
+//
+
+#define SMB_FLAGS_CANONICALIZED_PATHS 0x10
+
+//
+// When on in a open file request SMBs (open, create, openX, etc.) this
+// bit indicates a request for an oplock on the file.  When on in the
+// response, this bit indicates that the oplock was granted.
+//
+
+#define SMB_FLAGS_OPLOCK 0x20
+
+//
+// When on, this bit indicates that the server should notify the client
+// on any request that could cause the file to be changed.  If not set,
+// the server only notifies the client on other open requests on the
+// file.
+//
+
+#define SMB_FLAGS_OPLOCK_NOTIFY_ANY 0x40
+
+//
+// This bit indicates that the SMB is being sent from server to redir.
+//
+
+#define SMB_FLAGS_SERVER_TO_REDIR 0x80
+
+Flags2含义如下：
+
+#define SMB_FLAGS2_KNOWS_LONG_NAMES      0x0001
+#define SMB_FLAGS2_KNOWS_EAS             0x0002
+#define SMB_FLAGS2_SMB_SECURITY_SIGNATURE 0x0004
+#define SMB_FLAGS2_IS_LONG_NAME          0x0040
+#define SMB_FLAGS2_DFS                   0x1000
+#define SMB_FLAGS2_PAGING_IO             0x2000
+#define SMB_FLAGS2_NT_STATUS             0x4000
+#define SMB_FLAGS2_UNICODE               0x8000
+
+头部的最后是请求端运行环境比如进程和用户信息。
+
+typedef struct _SMB_HEADER {
+    UCHAR Protocol[4];                  // Contains 0xFF,'SMB'
+    UCHAR Command;                      // Command code
+    UCHAR ErrorClass;                   // Error class
+    UCHAR Reserved;                     // Reserved for future use
+    _USHORT( Error );                   // Error code
+    UCHAR Flags;                        // Flags
+    _USHORT( Flags2 );                  // More flags
+    union {
+        _USHORT( Reserved2 )[6];        // Reserved for future use
+        struct {
+            _USHORT( PidHigh );         // High part of PID (NT Create And X)
+            union {
+                struct {
+                    _ULONG( Key );              // Encryption key (IPX)
+                    _USHORT( Sid );             // Session ID (IPX)
+                    _USHORT( SequenceNumber );  // Sequence number (IPX)
+                    _USHORT( Gid );             // Group ID (unused?)
+                };
+                UCHAR SecuritySignature[SMB_SECURITY_SIGNATURE_LENGTH];
+                                         // Client must send the correct Signature
+                                         // for this SMB to be accepted.
+            };
+        };
+    };
+    _USHORT( Tid );                     // Authenticated user/group
+    _USHORT( Pid );                     // Caller's process id
+    _USHORT( Uid );                     // Unauthenticated user id
+    _USHORT( Mid );                     // multiplex id
+#ifdef NO_PACKING                       // ***
+    _USHORT( Kludge );                  // *** make sure parameter structs
+#endif                                  // *** are longword aligned
+} SMB_HEADER;
+
+// *** Start of SMB commands
+#define SMB_COM_CREATE_DIRECTORY         (UCHAR)0x00
+#define SMB_COM_DELETE_DIRECTORY         (UCHAR)0x01
+#define SMB_COM_OPEN                     (UCHAR)0x02
+#define SMB_COM_CREATE                   (UCHAR)0x03
+#define SMB_COM_CLOSE                    (UCHAR)0x04
+#define SMB_COM_FLUSH                    (UCHAR)0x05
+#define SMB_COM_DELETE                   (UCHAR)0x06
+#define SMB_COM_RENAME                   (UCHAR)0x07
+#define SMB_COM_QUERY_INFORMATION        (UCHAR)0x08
+#define SMB_COM_SET_INFORMATION          (UCHAR)0x09
+#define SMB_COM_READ                     (UCHAR)0x0A
+#define SMB_COM_WRITE                    (UCHAR)0x0B
+#define SMB_COM_LOCK_BYTE_RANGE          (UCHAR)0x0C
+#define SMB_COM_UNLOCK_BYTE_RANGE        (UCHAR)0x0D
+#define SMB_COM_CREATE_TEMPORARY         (UCHAR)0x0E
+#define SMB_COM_CREATE_NEW               (UCHAR)0x0F
+#define SMB_COM_CHECK_DIRECTORY          (UCHAR)0x10
+#define SMB_COM_PROCESS_EXIT             (UCHAR)0x11
+#define SMB_COM_SEEK                     (UCHAR)0x12
+#define SMB_COM_LOCK_AND_READ            (UCHAR)0x13
+#define SMB_COM_WRITE_AND_UNLOCK         (UCHAR)0x14
+#define SMB_COM_READ_RAW                 (UCHAR)0x1A
+#define SMB_COM_READ_MPX                 (UCHAR)0x1B
+#define SMB_COM_READ_MPX_SECONDARY       (UCHAR)0x1C    // server to redir only
+#define SMB_COM_WRITE_RAW                (UCHAR)0x1D
+#define SMB_COM_WRITE_MPX                (UCHAR)0x1E
+#define SMB_COM_WRITE_MPX_SECONDARY      (UCHAR)0x1F
+#define SMB_COM_WRITE_COMPLETE           (UCHAR)0x20    // server to redir only
+#define SMB_COM_QUERY_INFORMATION_SRV    (UCHAR)0x21
+#define SMB_COM_SET_INFORMATION2         (UCHAR)0x22
+#define SMB_COM_QUERY_INFORMATION2       (UCHAR)0x23
+#define SMB_COM_LOCKING_ANDX             (UCHAR)0x24
+#define SMB_COM_TRANSACTION              (UCHAR)0x25
+#define SMB_COM_TRANSACTION_SECONDARY    (UCHAR)0x26
+#define SMB_COM_IOCTL                    (UCHAR)0x27
+#define SMB_COM_IOCTL_SECONDARY          (UCHAR)0x28
+#define SMB_COM_COPY                     (UCHAR)0x29
+#define SMB_COM_MOVE                     (UCHAR)0x2A
+#define SMB_COM_ECHO                     (UCHAR)0x2B
+#define SMB_COM_WRITE_AND_CLOSE          (UCHAR)0x2C
+#define SMB_COM_OPEN_ANDX                (UCHAR)0x2D
+#define SMB_COM_READ_ANDX                (UCHAR)0x2E
+#define SMB_COM_WRITE_ANDX               (UCHAR)0x2F
+#define SMB_COM_CLOSE_AND_TREE_DISC      (UCHAR)0x31
+#define SMB_COM_TRANSACTION2             (UCHAR)0x32
+#define SMB_COM_TRANSACTION2_SECONDARY   (UCHAR)0x33
+#define SMB_COM_FIND_CLOSE2              (UCHAR)0x34
+#define SMB_COM_FIND_NOTIFY_CLOSE        (UCHAR)0x35
+#define SMB_COM_TREE_CONNECT             (UCHAR)0x70
+#define SMB_COM_TREE_DISCONNECT          (UCHAR)0x71
+#define SMB_COM_NEGOTIATE                (UCHAR)0x72
+#define SMB_COM_SESSION_SETUP_ANDX       (UCHAR)0x73
+#define SMB_COM_LOGOFF_ANDX              (UCHAR)0x74
+#define SMB_COM_TREE_CONNECT_ANDX        (UCHAR)0x75
+#define SMB_COM_QUERY_INFORMATION_DISK   (UCHAR)0x80
+#define SMB_COM_SEARCH                   (UCHAR)0x81
+#define SMB_COM_FIND                     (UCHAR)0x82
+#define SMB_COM_FIND_UNIQUE              (UCHAR)0x83
+#define SMB_COM_FIND_CLOSE               (UCHAR)0x84
+#define SMB_COM_NT_TRANSACT              (UCHAR)0xA0
+#define SMB_COM_NT_TRANSACT_SECONDARY    (UCHAR)0xA1
+#define SMB_COM_NT_CREATE_ANDX           (UCHAR)0xA2
+#define SMB_COM_NT_CANCEL                (UCHAR)0xA4
+#define SMB_COM_NT_RENAME                (UCHAR)0xA5
+#define SMB_COM_OPEN_PRINT_FILE          (UCHAR)0xC0
+#define SMB_COM_WRITE_PRINT_FILE         (UCHAR)0xC1
+#define SMB_COM_CLOSE_PRINT_FILE         (UCHAR)0xC2
+#define SMB_COM_GET_PRINT_QUEUE          (UCHAR)0xC3
+#define SMB_COM_SEND_MESSAGE             (UCHAR)0xD0
+#define SMB_COM_SEND_BROADCAST_MESSAGE   (UCHAR)0xD1
+#define SMB_COM_FORWARD_USER_NAME        (UCHAR)0xD2
+#define SMB_COM_CANCEL_FORWARD           (UCHAR)0xD3
+#define SMB_COM_GET_MACHINE_NAME         (UCHAR)0xD4
+#define SMB_COM_SEND_START_MB_MESSAGE    (UCHAR)0xD5
+#define SMB_COM_SEND_END_MB_MESSAGE      (UCHAR)0xD6
+#define SMB_COM_SEND_TEXT_MB_MESSAGE     (UCHAR)0xD7
+// *** End of SMB commands
+
+#define SMB_COM_NO_ANDX_COMMAND          (UCHAR)0xFF
+
+
+3   过程
+
+
+头部之后的部分根据Command的不同相应的解释也不同。
+拿一次读文件为例：
+
+第一次
+Command为SMB_COM_TRANSACTION2，Flags存在请求标志，SubCommand为QUERY_PATH_INFO。
+
+第二次
+Command为SMB_COM_TRANSACTION2，Flags存在请求标志，SubCommand为QUERY_FS_INFO。
+
+第三次
+Command为SMB_COM_TRANSACTION2，Flags存在请求标志，SubCommand为QUERY_PATH_INFO \changxf。
+
+第四次
+Command为SMB_COM_TRANSACTION2，Flags存在请求标志，SubCommand为QUERY_PATH_INFO \changxf\InternetMgr.txt。
+
+第五次
+Command为SMB_COM_TRANSACTION2，Flags存在请求标志，SubCommand为FIND_FIRST2 \changxf\InternetMgr.txt。
+
+第五次
+Command为SMB_COM_NT_CREATE_ANDX，Flags存在请求标志，\changxf\InternetMgr.txt。
+
+第七次
+Command为SMB_COM_TRANSACTION2，Flags存在请求标志，SubCommand为QUERY_FILE_INFO FID:0x400C。
+
+第八次
+Command为SMB_COM_TRANSACTION2，Flags存在请求标志，SubCommand为QUERY_FS_INFO。
+
+第九次
+Command为SMB_COM_TRANSACTION2，Flags存在请求标志，SubCommand为QUERY_FILE_INFO FID:0x400C。
+
+第十次
+Command为SMB_COM_TRANSACTION2，Flags存在请求标志，SubCommand为QUERY_FS_INFO FID:0x400C。
+
+第十一次
+Command为SMB_COM_TRANSACTION2，Flags存在请求标志，SubCommand为QUERY_FILE_INFO FID:0x400C Basic Info。
+
+第十二次
+Command为SMB_COM_TRANSACTION2，Flags存在请求标志，SubCommand为QUERY_FILE_INFO FID:0x400C EA Info。
+
+第十三次
+Command为SMB_COM_READ_ANDX Flags存在请求标志，SubCommand为QUERY_FILE_INFO FID:0x400C。
+
+第十四次
+Command为SMB_COM_LOGOFF_ANDX，Flags存在请求标志。
+
+第十五次
+Command为SMB_COM_TREE_DISCONNECT，Flags存在请求标志。
+
+第十六次
+Command为SMB_COM_CLOSE，Flags存在请求标志。
+
+在Read时文件的实际内容被读入。而此次Read前后会有两次QueryFile、QueryFs的过程。
+当Flags存在应答标志时，应答包会填充请求包后的部分回答请求的问题。
+其中Query只是查询时间、权限、属性，Find查询磁盘特性比如分配块、短名等。
+在TransAction2命令中，存在一个子命令结构，包含此次查询的具体类型。
+
+读入数据时请求包结构为：
+
+typedef struct _REQ_READ_ANDX {
+    UCHAR WordCount;                    // Count of parameter words = 10
+    UCHAR AndXCommand;                  // Secondary (X) command; 0xFF = none
+    UCHAR AndXReserved;                 // Reserved (must be 0)
+    _USHORT( AndXOffset );              // Offset to next command WordCount
+    _USHORT( Fid );                     // File handle
+    _ULONG( Offset );                   // Offset in file to begin read
+    _USHORT( MaxCount );                // Max number of bytes to return
+    _USHORT( MinCount );                // Min number of bytes to return
+    _ULONG( Timeout );
+    _USHORT( Remaining );               // Bytes remaining to satisfy request
+    _USHORT( ByteCount );               // Count of data bytes = 0
+    UCHAR Buffer[1];                    // empty
+} REQ_READ_ANDX;
+
+读入数据时应答包结构为：
+
+typedef struct _RESP_READ_ANDX {
+    UCHAR WordCount;                    // Count of parameter words = 12
+    UCHAR AndXCommand;                  // Secondary (X) command; 0xFF = none
+    UCHAR AndXReserved;                 // Reserved (must be 0)
+    _USHORT( AndXOffset );              // Offset to next command WordCount
+    _USHORT( Remaining );               // Bytes remaining to be read
+    _USHORT( DataCompactionMode );
+    _USHORT( Reserved );                // Reserved (must be 0)
+    _USHORT( DataLength );              // Number of data bytes (min = 0)
+    _USHORT( DataOffset );              // Offset (from header start) to data
+    union {
+        _USHORT( Reserved2 );           // Reserved (must be 0)
+        _USHORT( DataLengthHigh );      // upper 16 bits of DataLength if NT request
+    };
+    _ULONG( Reserved3 )[2];             // Reserved (must be 0)
+    _USHORT( ByteCount );               // Count of data bytes.  Inaccurate if we
+                                        //   are doing large Read&X's!
+    UCHAR Buffer[1];                    // Buffer containing:
+    //UCHAR Pad[];                      //  Pad to SHORT or LONG
+    //UCHAR Data[];                     //  Data (size = DataLength)
+} RESP_READ_ANDX;
+
+每个命令都有自己的数据结构，如果存在子命令，那么数据报的最后就会存在子命令结构。
+子命令为：
+
+USHORT  Subcommand;
+USHORT  ByteCount;
+UCHAR   Padding[3];
+
+子命令之前的结构都很类似基本上由WordCount、SecurityMode、AndXCommand、AndXOffset、
+Remaining、DataLength、DataOffset组成。

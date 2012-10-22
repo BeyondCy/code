@@ -1,0 +1,170 @@
+文档名称：NT设备驱动原理
+文档维护：Xuefeng Chang(welfear@gmail.com)
+文档日期：2011.3.1
+
+
+
+NT Driver分为总线驱动、功能驱动、过滤驱动三类。总线驱动需要与PnP管理器交互，
+功能驱动主要与Io管理器交互，而过滤驱动用于改变其它驱动的行为，它既可以安装在
+其它驱动的上层，又可以安装在下层，它是典型的软件“中间人”角色。微软会提供
+绝大多数总线驱动和系统所需的功能驱动。第三方可以提供过滤驱动、某种功能驱动和
+miniport驱动。
+
+对于功能驱动，NT常常会按照典型class、port、miniport把它分成三部分实现。class
+层用于管理：NT必须统一定义每类驱动的I/O控制码，便于应用程序用统一的命令控制
+设备。然而由于硬件细节的不同，class驱动需要port驱动的支持，class会将应用程序
+请求发送给不同的port驱动。port驱动再根据注册表中的配置信息找到特定硬件厂商的
+miniport驱动，再将请求发送给最终的硬件驱动。
+
+以上内容涉及到两种请求传递过程：在不同的功能驱动、过滤驱动和总线驱动中传递请求
+时，它们使用的是通过IRP请求包实现的；在功能驱动中，不同的class、port、miniport
+驱动中传递请求时，它们是通过调用PE导出函数实现的。总的来说，一个是通过数据，
+一个是通过函数调用。
+
+NT Driver在装载时是通过PE入口点的参数完成驱动对象初始化过程。这与Linux不同，它
+没有Linux中的注册驱动函数，这会使NT Driver的程序结构在实现多种驱动功能时变得
+复杂。NT这种设计方案是一个驱动文件常常只能对应一个驱动对象，也就是实现一种驱动
+功能。各种驱动对象会在系统中形成下面这种结构：
+
+
++---------------+   +---------------+   +---------------+
+| Filter Driver |   | Filter Driver |   | Filter Driver |
++---------------+   +---------------+   +---------------+
+       ^                    ^                   ^
+       |                    |                   |
++------+--------+   +-------+-------+   +---------------+
+|Function Driver|   |Function Driver|   |Function Driver|
++---------------+   +-------+-------+   +-------+-------+
+       ^                    ^                   ^
+       |                    |                   |
++---------------+   +---------------+   +---------------+
+| Filter Driver |   | Filter Driver |   | Filter Driver |
++---------------+   +---------------+   +---------------+
+       ^                    ^                   ^
+       |                    |                   |
++---------------+   +---------------+   +---------------+
+| Filter Driver |   | Filter Driver |   | Filter Driver |
++---------------+   +---------------+   +---------------+
+       ^                    ^                   ^
+       |                    |                   |
++---------------+   +---------------+   +---------------+
+|  Bus Driver   |<--+  Bus Driver   +-->|  Bus Driver   |
++---------------+   +---------------+   +---------------+
+       ^                    ^                   ^
+       |                    |                   |
++------+--------+   +-------+-------+   +-------+-------+
+| Filter Driver |   | Filter Driver |   | Filter Driver |
++---------------+   +---------------+   +---------------+
+                            ^
+                            |
+                    +---------------+
+                    |  Bus Driver   |
+                    +---------------+
+
+
+每个驱动对象对应系统中多个同类的设备对象。根据驱动形成的树形结构，驱动对应的
+设备也会形成一个类似的树形结构。NT中常用pdo、fdo、ufdo、lfdo几种术语表示它们，
+它们分别是指物理设备对象、功能设备对象、上层过滤设备对象和下层过滤设备。设备
+对象用于表示系统硬件的逻辑关系，内核会在内部使用设备节点结构维护设备各种状态。
+
+系统在引导时会调用IopInitializePlugPlayServices初始化即插即用服务。
+初始化过程有如下步骤：
+
+1.  判断默认总线类型。通过查询文件系统分配表中的HalQuerySystemInformation得到
+    当前系统的总线信息。除了IBM的MCA之外，查询到的其他类型的总线信息都认为是
+    ISA总线。
+
+2.  初始化根仲裁器。相关的设备有端口设备、物理内存、中断、总线设备。
+    初始化过程设置了ARBITER_INSTANCE结构中必须提供的四个回调函数
+    (unpack/score requirement和pack/unpack resource)。
+
+3.  打开或创建CCS\Enum\Root键、创建HTREE\ROOT\0键。初始化拔除设备列表、
+    意外拔除设备列表、设备树同步资源锁、设备树为空通知事件、设备树枚举操作
+    通知事件、PnP自旋锁、DockDevice的链表和互斥锁。(WarmDevice)
+
+4.  创建名为PnpManager的驱动对象。创建未命名的设备对象。PnpManager驱动中只
+    设置了AddDevice、IRP_MJ_PNP、IRP_MJ_POWER这三个必须的回调函数用于枚举系统
+    中其他设备。而创建的这个未命名对象就是第一个pdo设备。照例pdo设备都会在Flags
+    中设置DO_BUS_ENUMERATED_DEVICE，这也是判断PDO和FDO的标准之一。
+
+5.  分配根设备结点。分配的同时，相关的数据也就完成初始化过程，其中包括：
+    设备结点计数、总线类型（也就是默认总线类型）、本结点的枚举互斥锁、
+    本结点内的仲裁器和转换器列表、并设置了PDO和NODE两个结构的相互指针。
+    设置Flags为DNF_STARTED、DNF_PROCESSED、DNF_ENUMERATED，并把它命名为
+    HTREE\ROOT\0。
+
+6.  打开CCS\Control\Pnp键。如果DetectionEnabled项，就把项的值传给
+    PnPDetectionEnabled，看样子这个项可以控制PnP的枚举。
+    默认情况是开启的。
+
+7、 初始化PnP Notify。有的驱动要管理某一类的设备就需要注册一个通知来获得它
+    感兴趣设备的插入和拔除。比如fdisk，就是通过这种机制管理磁盘设备的。
+
+8、 以上7步就是第一次初始化过程，第二次初始化过程还要根据
+    CCS\Pnp\DisableFirmwareMapper的值俩决定是否枚举固件。
+
+在初始化的第一和第二过程都会开启根结点的枚举操作。枚举操作有以下几种：
+枚举设备树、枚举设备、枚举根设备、枚举引导设备等。其中根设备和引导设备
+是同步枚举的，其它都是通过工作项异步枚举的。在Windows 2000以前是通过
+IopDeviceActionWorker，而Windows XP是通过PipDeviceActionWorker实现枚举。
+枚举请求被放入一个列表之中，每个请求通过PI_DEVICE_REQUEST结构描述。
+在Worker得到运行的时候，它会处理每个挂在列表中的请求。在获得某一个请求时，
+它可能会经历如下处理过程：
+
+1.  重新处理引导设备资源。有时在第一次枚举设备的时候会出现资源不足或是
+    资源需求改变的情况，所以就应该有机制再次处理并满足这些设备的资源需求。
+
+2.  重新分配设备资源。只处理资源需求改变的情况。
+
+3.  重新满足设备资源。只处理资源未被满足的情况。
+
+4.  开始新设备。
+
+5.  重新枚举设备树。
+
+在处理各种设备节点请求时需要特别注意同步问题和树节点的状态控制。
+除去复杂的逻辑判断，实际上起主要实现函数只有以下几个：
+
+IopProcessAssignResources、IopProcessStartDevices、IopRestartDeviceNode、
+IopProcessNewDeviceNode、IopBusCheck
+
+IopBusCheck使用IopEnumerateDevice、IopProcessAssignResources、
+IopProcessStartDevices完成主要功能：
+
+1.  IopEnumerateDevice，它会根据传入的参数作为PDO，并枚举这个总线上所有的PDO。
+    它会调用IopQueryDeviceRelations向这个PDO的驱动发送IRP_MJ_PNP和
+    IRP_MN_QUERY_DEVICE_RELATIONS。根据驱动返回的数据设置这个PDO对应的设备节点。
+    分配子节点时会使用IopAllocateDeviceNode和IopInsertTreeDeviceNode。
+    最后通过调用IopProcessNewChildren为新的子节点调用AddDevice回调函数。
+    IopProcessNewDeviceNode用来查询注册表并创建对应设备实例，
+    IopCallDriverAddDevice是用来调用AddDevice的。
+
+2.  IopProcessStartDevices，实际上起关键作用的是IopProcessStartDevicesWorker。
+    它对本结点及其所有的子结点递归使用IopStartAndEnumerateDevice。顾名思义，它有
+    IopStartDevice和IopEnumerateDevice两个过程。IopStartDevice的实现是向对应
+    驱动发送IRP_MJ_PNP和IRP_MN_START_DEVICE。
+
+3.  IopProcessNewDeviceNode，首先创建HKLM\System\CCS\Enum中对应项，然后向对应
+    驱动发送IRP_MJ_PNP和IRP_MN_QUERY_ID查询UID/PID，接着发送IRP_MJ_PNP和
+    IRP_MN_QUERY_CAPABILITIES查询兼容ID，用IRP_MJ_PNP和IRP_MN_QUERY_DEVICE_TEXT
+    查询设备描述字符，创建HKLM\System\Enum\<Enumerator>\deviceId中的对应项，
+    最后用IRP_MJ_PNP和IRP_MN_QUERY_RESOURCE_REQUIREMENTS查询基本配置信息。
+    在处理完注册表与驱动查询之后发送PnP事件。
+
+4.  IopRestartDeviceNode，它是用来释放在创建设备节点时分配的内存，这样就为重新
+    枚举做了清理工作。
+
+5.  IopProcessAssignResources，它枚举本节点以及子结点，为它们分配
+    IOP_RESOURCE_REQUEST结构并设置部分值。
+
+
+对于用于实现逻辑功能驱动的驱动来说，它们会用顶层设备名将自己的设备直接挂接在
+设备栈顶端。与硬件驱动不同，它们更多的是依靠设备名建立上下层关系。
+
+建立好设备栈之后，应用程序就可以发送I/O请求了。设备之间用IRP结构表示I/O请求，
+这也就是NT中最与微内核理论相似的“消息”机制了。IRP是通过IoCallDriver实现在
+不同设备中的传递过程。每层驱动在处理IRP的最后步骤都是return IoCallDriver。与
+Linux不同的是，NT的I/O处理过程包含发送和完成两部分。IoCallDriver只代表发送，而
+IoCompleteRequest才表示I/O请求完成。最后一层的设备常常会return STATUS_PENDING，
+这时应用程序的请求会根据是否同步或异步选择进入等待状态。在底层设备完成请求时，
+IoCompleteRequest会排队APC，甚至为应用程序完成复杂的Iocp过程。

@@ -1,0 +1,254 @@
+兼容Vista遇到的问题
+Xuefeng Chang(welfear@gmail.com)
+2008
+
+
+
+设置系统调试引导：
+{GUID}要替换为bcdedit /copy {current} /d DebugEntry产生的值。
+bcdedit /copy {current} /d DebugEntry
+bcdedit /dbgsetting serial baudrate:115200 debugport:1
+bcdedit /displayorder {current} {GUID}
+bcdedit /debug {GUID} on
+
+其实，简单的说bcdedit /debug on就可以打开调试引导，然而如果机器上还有以前的操作系统
+需要引导还要加入：
+bcdedit /create {legacy} /d "XP"
+bcdedit /set {legacy} device boot
+bcdedit /set {legacy} path ntldr
+bcdedit /displayorder {legacy} /addlast
+
+一般的，使用bcdedit /displayorder {legacy} /addlast就可以了。
+
+打开调试信息：
+HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Session Manager\Debug Print Filter
+下建立项Debug Print Filter并建立DWORD值Defaut为0xfffffff。
+Vista 主要设计目标客户机，所以打印调试信息需要用掩码打开，mask在Vista DDK
+中有详细讲解。如果不想重启操作系统可以在windbg中直接设置mask。
+
+VC6：
+VC6带的编译器无法编译Vista DDK中的代码。错误信息是在DDK的一个头文件中
+打印出来的，意思是这个版本的编译器无法被DDK支持。
+SDK也有类似的情况，Windows 2003 sp1 SDK和之后版本也不再支持VC6
+编译器。
+
+libpcap：
+在调试libpcap代码时，由于本机已经安装了libpcap，所以调试的时候系统使用了
+早已安装好的release dll而不是要调试的刚刚编译好的debug dll。这样奇怪的事情
+发生了。
+
+DbgView：
+OutPutDebugString是把User Mode调试信息发送给调试器的API。
+如果使用OutPutDebugStrng的进程被Ring3调试器调试那么，调试信息会被发送
+给Ring3调试器。如果有系统调试器工作，那么系统调试器也会收到。
+而使用DbgView观察的User Mode调试信息是使用HooK。所以如果发现DbgView
+不能工作应该先看看其capture菜单的设置情况。OSR上有关于Vista 64和DbgView
+的相关讨论，但还没有来得急看。我们发现DbgView不能得到服务的调试信息，之
+后发现，DbgView不能得到其它session的调试信息。原因是要访问别的Session
+对象必须要加Global前缀并设置好权限。在新版的DbgView中要使用capture中的
+Capture Global Win32。
+
+nsi：
+测试中发现，Vista在设置IP地址的时候使用了\device\nsi这个设备。我们上网搜索
+到一篇相关文章，作者是CardMagic。那篇文章介绍了一种使用nsi来隐藏本机端口的
+方法，因为以前的方法在Vista通通都废了。在HooK NtDeviceIoControlFile之
+后我们得到了120013这个东西。事情还不算完，测试时发现Ping也会使用这个ControlCode，
+在对比了三个机器上数据结构格式之后，又加了一些判断。
+在Ring3中，开UAC的时候dllhost用netsh.dll发送此controlcode，而没有UAC的
+时候explorer会直接使用netsh.dll。
+
+UAC：
+万恶的UAC是最令我们痛苦的。在administrators组除了administrator之外，所有
+的用户都使用标准用户权限，只有在询问用户之后才会被赋予真正的管理员权限。
+在msconfig中可以配置UAC。需要提升权限的应用程序必须使用manifest文件编译
+之后图标中就会出现一个小盾牌，但不幸的是这样也有例外，如果名字中patch等
+字样的程序也会有小盾牌，并询问用户提升权限。Vista中新加入了一个
+会话0隔离的概念，以前的操作系统会把高权限服务和普通应用程序放在同一个
+会话之中，而Vista是把高权限的服务放在session 0之中，而session 0没有
+打开桌面对象\windows\windowstations\winsta0，所以没有和用户交互的能力。
+微软这么做是把高权限和与用户交互两种能力分开。我们以前的产品却有这样的
+特性，比如客户端的某个服务，以高权限运行却又可以弹出提示窗口。现在在
+微软的地盘上这是不被允许的。当然我们也不是没有办法。刚跳槽到微软内核组的
+Mark Russinovich在谈到安全边界时提到CreateRemoteThread是个不安全的API，
+Vista还有个完整性检查的概念(MIC)就是用来控制这个的，大概意思是低的打不开
+高的，即使有权限。但我们不在这个概念的绞杀范围内，我们有正规的高权限
+和高MIC的服务。这样用CreateRemoteThread注如到在session 1的winlogon.exe
+让它来帮我们启动ClientUI。还可以用服务打开winlogon的token，在赋予我们的
+ClientUI。但最后落到项目上还是顺着微软的意思把高权限和与用户交互功能分开。
+TweakUAC.exe可以用与设置UAC。
+
+rename：
+HooK NtSetInfomationFile把改名字的动作加以判断，阻止掉非法的改文件名操作。
+但是用户可以在本路径下用剪切并复制创建一个名为"复件 filename.exe”的文件。
+这样我们又HooK NtCreateFile判断创建的文件名是不是"复件 filename.exe"。
+即使是这样还有漏洞，因为跨分区的文件操作还是不能阻止，但大家认为
+这样熟悉文件系统并熟练使用cmd.exe的一般用户是不存在的。appmgr的一个不是
+漏洞的漏洞是并没有判断NTFS文件系统特性：使用OBJECT ID访问文件。 
+
+peb：
+ 
+CreateProcess->NtCreateProcess->NtCreateThread->NotifyRoutine
+父进程把子进程参数设置好，子进程随后会再次自己处理数据。ImageFile的
+buffer是ProcessParameters的偏移。
+
+kd> ba r4 nt!PspCreateProcessNotifyRoutineCount
+
+kd> .process /i 81477020
+You need to continue execution (press 'g' ) for the context
+to be switched. When the debugger breaks in again, you will be in
+the new process context.
+
+kd> !peb
+PEB at 7ffdf000
+InheritedAddressSpace: No
+ReadImageFileExecOptions: No
+BeingDebugged: No
+ImageBaseAddress: 00400000
+Ldr 00000000
+*** unable to read Ldr table at 00000000
+SubSystemData: 00000000
+ProcessHeap: 00000000
+ProcessParameters: 00020000
+WindowTitle: 'C:\Program Files\Internet Explorer\iexplore.exe'
+ImageFile: 'C:\Program Files\Internet Explorer\iexplore.exe'
+CommandLine: '"C:\Program Files\Internet Explorer\iexplore.exe"'
+DllPath: 'C:\Program Files\Internet Explorer;C:\WINDOWS\System32;'
+Environment: 00010000
+=::=::\
+ALLUSERSPROFILE=C:\Documents and Settings\All USERS
+APPDATA=C:\Documents and Settings\Administrator\Application Data
+CLIENTNAME=Console
+CommonProgramFiles=C:\Program Files\Common Files
+COMPUTERNAME=DEBUG
+ComSpec=C:\WINDOWS\system32\cmd.exe
+HOMEDRIVE=C:
+HOMEPATH=\Documents and Settings\Administrator
+LOGONSERVER=\\DEBUG
+NUMBER_OF_PROCESSORS=1
+OS=Windows_NT
+Path=C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\Program Files\Internet Explorer;
+PATHEXT=.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH
+PROCESSOR_ARCHITECTURE=x86
+PROCESSOR_IDENTIFIER=x86 Family 6 Model 15 Stepping 8, GenuineIntel
+PROCESSOR_LEVEL=6
+PROCESSOR_REVISION=0f08
+ProgramFiles=C:\Program Files
+SESSIONNAME=Console
+SystemDrive=C:
+SystemRoot=C:\WINDOWS
+TEMP=C:\DOCUME~1\ADMINI~1\LOCALS~1\Temp
+TMP=C:\DOCUME~1\ADMINI~1\LOCALS~1\Temp
+USERDOMAIN=DEBUG
+USERNAME=Administrator
+USERPROFILE=C:\Documents and Settings\Administrator
+windir=C:\WINDOWS
+kd> dt -r -v nt!_PEB 7ffdf000
+struct _PEB, 66 elements, 0x210 bytes
++0x000 InheritedAddressSpace : 0 ''
++0x001 ReadImageFileExecOptions : 0 ''
++0x002 BeingDebugged : 0 ''
++0x003 SpareBool : 0 ''
++0x004 Mutant : 0xffffffff
++0x008 ImageBaseAddress : 0x00400000
++0x00c Ldr : (null)
++0x010 ProcessParameters : 0x00020000 struct _RTL_USER_PROCESS_PARAMETERS, 28 elements, 0x290 bytes
++0x000 MaximumLength : 0x1000
++0x004 Length : 0x744
++0x008 Flags : 0
++0x00c DebugFlags : 0
++0x010 ConsoleHandle : 0xfffffffe
++0x014 ConsoleFlags : 0
++0x018 StandardInput : (null)
++0x01c StandardOutput : 0x00010001
++0x020 StandardError : (null)
++0x024 CurrentDirectory : struct _CURDIR, 2 elements, 0xc bytes
++0x000 DosPath : struct _UNICODE_STRING, 3 elements, 0x8 bytes
+"--- memory read error at address 0x00000290 ---"
++0x008 Handle : (null)
++0x030 DllPath : struct _UNICODE_STRING, 3 elements, 0x8 bytes
+"--- memory read error at address 0x00000498 ---"
++0x000 Length : 0x162
++0x002 MaximumLength : 0x164
++0x004 Buffer : 0x00000498 "--- memory read error at address 0x00000498 ---"
++0x038 ImagePathName : struct _UNICODE_STRING, 3 elements, 0x8 bytes
+"--- memory read error at address 0x000005fc ---"
++0x000 Length : 0x5e
++0x002 MaximumLength : 0x60
++0x004 Buffer : 0x000005fc "--- memory read error at address 0x000005fc ---"
++0x040 CommandLine : struct _UNICODE_STRING, 3 elements, 0x8 bytes
+"--- memory read error at address 0x0000065c ---"
++0x000 Length : 0x62
++0x002 MaximumLength : 0x64
++0x004 Buffer : 0x0000065c "--- memory read error at address 0x0000065c ---"
++0x048 Environment : 0x00010000
++0x04c StartingX : 0
++0x050 StartingY : 0
++0x054 CountX : 0
++0x058 CountY : 0
++0x05c CountCharsX : 0
++0x060 CountCharsY : 0
++0x064 FillAttribute : 0
++0x068 WindowFlags : 0x401
++0x06c ShowWindowFlags : 1
++0x070 WindowTitle : struct _UNICODE_STRING, 3 elements, 0x8 bytes
+"--- memory read error at address 0x000006c0 ---"
++0x000 Length : 0x5e
++0x002 MaximumLength : 0x60
++0x004 Buffer : 0x000006c0 "--- memory read error at address 0x000006c0 ---"
++0x078 DesktopInfo : struct _UNICODE_STRING, 3 elements, 0x8 bytes
+"--- memory read error at address 0x00000720 ---"
++0x000 Length : 0x1e
++0x002 MaximumLength : 0x20
++0x004 Buffer : 0x00000720 "--- memory read error at address 0x00000720 ---"
++0x080 ShellInfo : struct _UNICODE_STRING, 3 elements, 0x8 bytes
+"--- memory read error at address 0x00000740 ---" +0x000 Length : 0
++0x002 MaximumLength : 2
++0x004 Buffer : 0x00000740 "--- memory read error at address 0x00000740 ---"
++0x088 RuntimeData : struct _UNICODE_STRING, 3 elements, 0x8 bytes
+"" +0x000 Length : 0
++0x002 MaximumLength : 0
++0x004 Buffer : (null)
++0x090 CurrentDirectores : [32] struct _RTL_DRIVE_LETTER_CURDIR, 4 elements, 0x10 bytes
++0x000 Flags : 0
++0x002 Length : 0
++0x004 TimeStamp : 0
++0x008 DosPath : struct _STRING, 3 elements, 0x8 bytes
+"" +0x014 SubSystemData : (null)
++0x018 ProcessHeap : (null)
++0x01c FastPebLock : (null)
++0x020 FastPebLockRoutine : (null)
++0x024 FastPebUnlockRoutine : (null)
++0x028 EnvironmentUpdateCount : 0
++0x02c KernelCallbackTable : (null) 
+
+disable802.1X：
+
+在关闭验证的情况下：
+HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\EAPOL\Parameters\Interfaces\
+{FF776A4E-2D35-414F-8A5B-E62CB1F5E763}\1,类型为bin,值为：
+  05,00,00,00,00,00,00,00,00,00,00,00,04,00,00,00,20,00,00,00,11,22,33,\
+  11,22,33,11,22,33,11,22,33,11,22,33,11,22,33,11,22,33,11,22,33,11,22,33,11,\
+  22,33,11,22,0d,00,00,00,28,00,00,00,00,00,00,00,28,00,00,00,05,00,00,00,00,\
+  00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,\
+  00,00,00,00,00,00,19,00,00,00,4f,00,00,00,01,00,00,00,4f,00,00,00,01,00,00,\
+  00,00,00,00,00,01,00,00,00,2d,00,00,00,11,00,00,00,01,00,00,00,14,00,00,00,\
+  a3,e3,1e,20,b2,e4,6a,32,85,20,47,2d,0c,de,95,23,e7,26,0c,6d,00,00,01,00,00,\
+  00,10,00,00,00,1a,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00
+
+在启用验证的情况中：
+md5质询 05,00,00,00,00,00,00,00,00,00,00,80,04,00,00,00,20,00,00,00,11,22,33
+智能证书05,00,00,00,00,00,00,00,00,00,00,80,0d,00,00,00,20,00,00,00,11,22,33
+
+它们三个其它部分完全相同只是第12字节和第13字节有区别。
+不启用是0004，质询是8004，智能是800D。
+
+其中的GUID可以由
+HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\EAPOL\Parameters\General\InterfaceList
+来读取。
+
+Vista中的配置并不在注册表中而是在文件中。在本机系统盘下的
+\ProgramData\Microsoft\dot3svc\Profiles\Interfaces\{45FD577A-D4BF-471C-B03B-F2DA28FFE3BE}
+中有一个随机命名的XML文件。文件中的TRUE或是FALSE表示该功能是否
+启用。
+
+最简单的方法是net stop wzcsvc和net stop dot3svc。

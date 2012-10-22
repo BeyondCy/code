@@ -1,0 +1,315 @@
+文档名称：TDI过滤驱动分析
+文档维护：Xuefeng Chang(welfear@gmail.com)
+创建时间：2008年3月6日
+更新时间：2008年3月7日
+更新内容：Vista中TDI驱动的变化
+更新时间：2008年5月8日
+更新内容：过滤GET/POST请求方法
+
+目录
+
+0 介绍
+0.1 TDI驱动作用
+0.2 Windows NT网络总体结构
+
+1. 过滤设备
+1.1 绑定目标
+1.2 分发函数
+1.3 过滤地址
+1.4 过滤内容
+1.4.1 过滤HTTP
+1.4.2 过滤DNS
+
+2. VISTA网络结构
+
+3. 驱动代码分析
+3.1 主要数据结构分析
+3.2 主要算法分析
+
+4. 附属内容
+4.1 HTTP协议GET请求数据
+4.2 HTTP协议POST请求数据
+
+
+
+0. 介绍
+
+
+0.1 TDI驱动作用
+
+TDI协议驱动主要应用于版本号在nt4至nt5之间的操作系统，本文档对TDI驱动的分析主要参考nt4所提供
+的TDI驱动。TDI是Transport Driver Interface首字母缩写，主要提供网络层协议和传输层协议的实现。
+
+0.2 Windows NT网络总体结构
+
+网络应用程序一般通过MSDN提供的ws2_32.dll的文档使用winsock网络接口。如果在注册表里设置了其它
+的SPI服务，Windows NT会加载相映的动态连接库实现应用层的winsock API过滤。ws2_32.dll通过查找
+注册表里的服务提供者信息，调用不同服务提供者的实现接口。相对于TCP/IP，程序会进入msafd.dll和
+wshtcpip.dll中。在wshtcpip.dll中，通过调用ntdll.dll中的Native API把请求发送到afd.sys中。AFD
+是一个文件系统驱动，所以Windows NT的网络驱动和文件密切相关。然后请求到达TDI驱动，对于TCP/IP
+对应的驱动是tcpip.sys。最后请求会传递到NDIS中通过miniport驱动发送或接收网卡数据。以上是网络
+数据包的大致流程。值得说明的是AFD(Ancillary Function Driver)的设计，通过设计统一的接口和注册
+表中的信息达到实现不同协议栈的目的。不过这部分设计也有intel公司功劳，因为代码中有很多intel
+公司工程师的署名:-)。
+
+
+1. 过滤设备
+
+
+1.1 绑定目标
+
+TDI会创建四个网络设备而不是三个。它们是\Device\Tcp、\Device\Udp、\Device\RawIp、\Device\Ip，
+其中的\Device\Ip我们不必关心。真正的传送IP数据的是\Device\RawIp。就我们的过滤目的而言，IP设
+备都不用关心。这样，我们使用IoCreateDevice创建两个我们自己的设备，并通过IoAttachDevice放到
+\Device\Tcp和\Device\Udp之上。对IoAttachDevice的使用要小心，IoAttachDevice会用IoCreateFile
+打开目的设备，绑定设备之后在关闭，但那时我们的设备已经在设备栈之上，所以也会收到close IRP。
+同时为了以后使用方便我们保存了TDI设备的地址。创建的设备要设置Flags为DO_DIRECT_IO，因为TDI设
+备都使用这个方式。
+
+1.2 分发函数
+
+除了IRP_MJ_INTERNAL_DEVICE_CONTROL之外，其它的IRP都被发送到TCPDispatch之中。在TCPDispatch里
+有如下几种情况：
+
+1. \Device\Ip的IRP被送到IPDispatch之中。这些IRP可能是从ipconfig、ping、route中发出的。
+
+1.1 IPCleanup负责清理未处理IRP。
+
+1.2 IPDispatchDeviceControl中先处理IOCTL_ICMP_ECHO_REQUEST调用关系如下：
+DispatchEchoRequest->ICMPEchoRequest->ICMPEcho->SendEcho->IPTransmit->SendIPPacket。
+IOCTL_ICMP_ECHO_REQUEST支持了SDK中提供的icmp.dll的接口实现。ICMPEchoRequest可以被
+内核协议栈直接使用也可以接受用户请求。IOCTL_IP_GET_NTE_INFO、IOCTL_IP_ADD_NTE、
+IOCTL_IP_DELETE_NTE提供路由表设置功能。IOCTL_IP_SET_DHCP_INTERFACE提供DHCP设置功能。
+IOCTL_IP_SET_ADDRESS提供地址设置功能。用户可以通过interface系列API使用以上功能。
+IOCTL_IP_SET_FILTER_POINTER提供对IP过滤驱动的支持。
+
+2. 其它三个设备统一在TCPDispatch中得到分配。
+
+2.1 处理IRP_MJ_DEVICE_CONTROL时先使用TdiMapUserRequest把用户I/O Control code 转化成内部
+成MinorFunction。比如IOCTL_TDI_CONNECT变成TDI_CONNECT。调用TCPDispatchDeviceControl
+和TCPDispatchInternalDeviceControl。前者是用来实现IOCTL_TCP_QUERY_INFORMATION_EX和
+IOCTL_TCP_SET_INFORMATION_EX的。不过在windows 2000之后IRP_MJ_DEVICE_CONTROL并不再需
+要转换了。
+
+2.2 为IRP_MJ_QUERY_SECURITY保留接口。看来微软早意识到RawIP的安全问题，不过这个接口在XP的
+SP2补丁之后才起作用。
+
+2.3 TCPCreate、TCPClose、TCPCleanup几个分派函数处理TDI_CONTROL_CHANNEL_FILE、
+TDI_CONNECTION_FILE和TDI_TRANSPORT_ADDRESS_FILE。TDI_CONTROL_CHANNEL_FILE对应EA为空
+的情况。TCPCreate实现如下：得到从NtCreateFile中的Ea(extra缩写)参数，如果为空，则要
+创建的是TDI_CONTROL_CHANNEL_FILE。如果不为空，用FindEA查找TdiTransportAddress，如果
+找到用TdiOpenAddress建立地址对象。传输地址对象是三个设备都可以有的。再用FindEA查找
+TdiConnectionContext，如果找到则用TdiOpenConnection建立连接对象，并且只有Tcp设备可以
+建立。
+
+2.4 TCPDispatchInternalDeviceControl实现了TDI的大多数功能。和常见的文件系统驱动类似，TDI
+驱动使用由AFD文件系统驱动建立的FsContext文件控制块，而FsContext2保存了地址对象类型。
+如果FsContext2为TDI_CONNECTION_FILE，也就是连接对象，有这几种IRP处理TDI_RECEIVE、
+TDI_DISASSOCIATE_ADDRESS、TDI_CONNECTTDI_DISCONNECT、TDI_LISTENTDI_ACCEPT、TDI_SEND、
+TDI_ASSOCIATE_ADDRESS。
+如果FsContext2为TDI_TRANSPORT_ADDRESS_FILE，要处理TDI_SET_EVENT_HANDLER、
+TDI_SEND_DATAGRAM、TDI_RECEIVE_DATAGRAM。
+最后两种TDI_QUERY_INFORMATION和TDI_SET_INFORMATION三个设备都可以处理。
+
+TdiMapUserRequest用于把IRP_MJ_DEVICE_CONTROL映射为IRP_MJ_INTERNAL_DEVICE_CONTROL。
+通过AFD.sys发送的网络请求被转化成IRP_MJ_INTERNAL_DEVICE_CONTROL，所以可以先不考虑
+IRP_MJ_DEVICE_CONTROL。另外，WinNT组件内部使用IOCTL_TDI_QUERY_DIRECT_SEND_HANDLER
+和IOCTL_TDI_QUERY_DIRECT_SENDDG_HANDLER来直接发送数据包，这个未公开的机制可以绕过
+我们的过滤。在必要时也要考虑在内。
+
+1.3 过滤地址
+
+1.3.1 本地地址
+
+本地地址放在EAName之后，TRANSPORT_ADDRESS结构里的TDI_ADDRESS_IP中的sin_port和in_addr。
+
+1.3.2 远程地址
+
+TCP协议的远程地址在(PTDI_REQUEST_KERNEL_CONNECT)&(IrpSp->Parameters)之中。
+而RawIp和UDP协议的远程地址在(PTDI_REQUEST_KERNEL_SENDDG)&(IrpSp->Parameters)之中。
+
+1.4 过滤内容
+
+过滤TDI_SEND、TDI_RECEIVE、TDI_SEND_DATAGRAM、TDI_RECEIVE_DATAGRAM时查看irp->MdlAddress。
+
+1.4.1 过滤HTTP
+
+本节参考RFC1945、2068、2616关于HTTP 1.0/1.1版本的协议标准和RFC2518、3253关于WebDav的描述。
+
+1. 过滤请求。需要过滤的请求报文有GET和POST两种。请求行格式为：请求 URI HTTP版本。
+实例中的GET请求为： GET /cgi-bin/cvstrac/NetWorkAudit/wiki HTTP/1.1\r\n
+实例中的POST请求为：POST /cgi-bin/cvstrac/NetWorkAudit/login HTTP/1.1\r\n
+报文头部主要有：
+Accept: image/gif, image/x-xbitmap, image/jpeg, ......application/msword, */*\r\n
+Referer: http://192.168.0.8/cgi-bin/cvstrac/NetW ... Audit/wiki\r\n
+Accept-Language: zh-cn\r\n
+Content-Type: application/x-www-form-urlencoded\r\n
+Accept-Encoding: gzip, deflate\r\n
+User-Agent: Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1; .NE......7)\r\n
+Host: 192.168.0.8\r\n
+Content-Length: 80\r\n
+Connection: Keep-Alive\r\n
+Cache-Control: no-cache\r\n
+比较重要的是Content-Length，冒号后面是body部分的长度。
+身体部分。只有POST请求有body部分。body跟在头部之后并多空一行。比如POST表单参数：
+nxp=%2Fcgi-bin%2Fcvstrac%2FNetWorkAudit%2Fwiki&u=welear&p=welfar&in=%B5%C7%C2%BC
+
+2. 过滤响应。响应行格式为HTTP版本号 状态码 状态码解释。头部与身体和请求一样。例如：
+HTTP/1.1 302 Moved Temporarily\r\n
+Date: Tue, 11 Mar 2008 09:32:00 GM\r\n
+Server: Apache/1.3.19 (Unix) (Red-Hat/Linux)\r\n
+Location: /cgi......\r\n
+Content-Length: 106\r\n
+Keep-Alive: timeout=15, max=100\r\n
+Connection: Keep-Alive\r\n
+Content-Type: text/html; charset=GB2312\r\n
+其中比较重要的是Content-Type和Content-Length。过滤时判断状态码为200即可。
+不过过滤断点续传还需要进一步研究。
+
+过滤需要根据需求判断头部信息，保存身体部分内容。用可选字段Host可以得到用户键入浏览器URI地址。
+判断用户意图还需要过滤GET请求的文件的后缀名。一般用html和htm作为网页的默认后缀名，用
+asp、aspx、php、jsp作为动态网页的默认后缀名。POST请求并不过滤后缀和post参数。如果Host字段不可
+用，那么就必须使用下面的《过滤DNS》一节的方法。
+
+1.4.2 过滤DNS
+
+过滤DNS数据包是为还原域名功能所做的必要准备。DNS查询和响应有可能使用UDP协议也有可能使用
+TCP协议，在实际测试中发现发送DNS数据包时并不使用Connect。DNS的查询和响应使用统一的包格式，
+各字段含义如下：
+
+1. 标识。2字节，用来确定查询和响应的对应关系。
+
+2. 标志。2字节，表示协议包含义细节。
+OR(1bit):0代表查询，1代表响应。
+opcode(4bit):0代表标准查询，1代表反向查询，2代表服务器状态请求。
+AA(1bit):名字服务器授权该域。
+TC(1bit):代表超过512字节可以被截断。
+RD(1bit):代表期望查询。
+RA(1bit):代表递归查询。
+zero(3bit):0。
+rcode(4bit):0代表没有差错，3代表名字差错。
+
+3. 问题数、资源记录数、授权资源记录数、额外资源记录数。它们每个字段占2字节，代表各种
+记录数。一般问题数或资源数为1，其它都是0。
+
+
+2. VISTA网络结构
+
+
+Vista在网络部分做了比较大的改动。用WSK(Winsock Kernel)和WFP(Windows Filtering Platform)代替
+TDI驱动。
+
+2.1 Winsock Kernel
+
+由ISO的7个分层协议到绝大多数现实使用的4层简化网络协议为操作系统的网络实现奠定了设计基础。
+在WinNT的网络中，设计者又把问题分为两个方面来看，也就是TDI和NDIS。NDIS实现了标准网络协议
+和网卡的结合问题，也就是网络层和传输层与数据链路层和物理层的衔接问题。以前的TDI主要包括
+Socket Emulator、NetBios Emulator、Redirector等。这样一来，Socket接口只是在应用层起作用。
+这些TDI最后依然要使用以socket为接口的网络协议，而且TDI中有一些接口完全可以放在一起，减少
+代码量。在Vista的设计中，socket被放在内核中用作TDI和NDIS的接口，而原来的TDI有了新的位置，
+就是WSK Application，实现WSK Client NPI。下面是Vista DDK原文：
+"WSK applications discover and attach to the WSK subsystem by using a set of WSK
+registration functions. Applications can use these functions to dynamically detect
+when the WSK subsystem is available and to exchange dispatch tables that constitute
+the provider and client side implementations of the WSK NPI."
+这里的WSK subsystem就是socket在内核部分的实现者。
+WSK Client使用Network Module Registrar(NMR)提供的接口向Provider Module注册自己。最重要的是
+WSK Client必须使用address family、socket type、protocol参数转换为TDI Transports的设备名字，
+调用WSK Subsystem提供的WskControlClient，并设置好WSK_TDI_DEVICENAME_MAPPING参数。
+最后，微软这么设计可能还有一个原因：Unix系列操作系统都是在内核实现socket网络接口，这样做也算
+和别人一样了，还有大量的开源操作系统可以参考。以socket为接口的网络设计已经被实现的很好了。
+
+2.2 Windows Filtering Platform
+
+WFP是TDI Filter Driver的替代者。vista提供了统一接口实现过滤引擎，而我们又变成了它的客户。:-(
+
+
+4. 附属内容
+
+
+4.1 HTTP协议GET请求数据
+
+0000 00 11 09 8d ec 80 00 0a eb 86 d9 d4 08 00 45 00 ........ ......E.
+0010 02 0a 11 38 40 00 40 06 a6 2a c0 a8 00 33 c0 a8 ...8@.@. .*...3..
+0020 00 08 05 8e 00 50 3b 50 27 49 10 ed e2 31 50 18 .....P;P 'I...1P.
+0030 fa 84 d6 0d 00 00 47 45 54 20 2f 63 67 69 2d 62 ......GE T /cgi-b
+0040 69 6e 2f 63 76 73 74 72 61 63 2f 4e 65 74 57 6f in/cvstr ac/NetWo
+0050 72 6b 41 75 64 69 74 2f 6c 6f 67 69 6e 3f 6e 78 rkAudit/ login?nx
+0060 70 3d 2f 63 67 69 2d 62 69 6e 2f 63 76 73 74 72 p=/cgi-b in/cvstr
+0070 61 63 2f 4e 65 74 57 6f 72 6b 41 75 64 69 74 2f ac/NetWo rkAudit/
+0080 77 69 6b 69 20 48 54 54 50 2f 31 2e 31 0d 0a 41 wiki HTT P/1.1..A
+0090 63 63 65 70 74 3a 20 69 6d 61 67 65 2f 67 69 66 ccept: i mage/gif
+00a0 2c 20 69 6d 61 67 65 2f 78 2d 78 62 69 74 6d 61 , image/ x-xbitma
+00b0 70 2c 20 69 6d 61 67 65 2f 6a 70 65 67 2c 20 69 p, image /jpeg, i
+00c0 6d 61 67 65 2f 70 6a 70 65 67 2c 20 61 70 70 6c mage/pjp eg, appl
+00d0 69 63 61 74 69 6f 6e 2f 78 2d 73 68 6f 63 6b 77 ication/ x-shockw
+00e0 61 76 65 2d 66 6c 61 73 68 2c 20 61 70 70 6c 69 ave-flas h, appli
+00f0 63 61 74 69 6f 6e 2f 76 6e 64 2e 6d 73 2d 65 78 cation/v nd.ms-ex
+0100 63 65 6c 2c 20 61 70 70 6c 69 63 61 74 69 6f 6e cel, app lication
+0110 2f 76 6e 64 2e 6d 73 2d 70 6f 77 65 72 70 6f 69 /vnd.ms- powerpoi
+0120 6e 74 2c 20 61 70 70 6c 69 63 61 74 69 6f 6e 2f nt, appl ication/
+0130 6d 73 77 6f 72 64 2c 20 2a 2f 2a 0d 0a 52 65 66 msword, */*..Ref
+0140 65 72 65 72 3a 20 68 74 74 70 3a 2f 2f 31 39 32 erer: ht tp://192
+0150 2e 31 36 38 2e 30 2e 38 0d 0a 41 63 63 65 70 74 .168.0.8 ..Accept
+0160 2d 4c 61 6e 67 75 61 67 65 3a 20 7a 68 2d 63 6e -Languag e: zh-cn
+0170 0d 0a 41 63 63 65 70 74 2d 45 6e 63 6f 64 69 6e ..Accept -Encodin
+0180 67 3a 20 67 7a 69 70 2c 20 64 65 66 6c 61 74 65 g: gzip, deflate
+0190 0d 0a 55 73 65 72 2d 41 67 65 6e 74 3a 20 4d 6f ..User-A gent: Mo
+01a0 7a 69 6c 6c 61 2f 34 2e 30 20 28 63 6f 6d 70 61 zilla/4. 0 (compa
+01b0 74 69 62 6c 65 3b 20 4d 53 49 45 20 36 2e 30 3b tible; M SIE 6.0;
+01c0 20 57 69 6e 64 6f 77 73 20 4e 54 20 35 2e 31 3b Windows NT 5.1;
+01d0 20 53 56 31 3b 20 2e 4e 45 54 20 43 4c 52 20 32 SV1; .N ET CLR 2
+01e0 2e 30 2e 35 30 37 32 37 29 0d 0a 48 6f 73 74 3a .0.50727 )..Host:
+01f0 20 31 39 32 2e 31 36 38 2e 30 2e 38 0d 0a 43 6f 192.168 .0.8..Co
+0200 6e 6e 65 63 74 69 6f 6e 3a 20 4b 65 65 70 2d 41 nnection : Keep-A
+0210 6c 69 76 65 0d 0a 0d 0a live....
+
+4.2 HTTP协议POST请求数据
+
+0000 00 11 09 8d ec 80 00 0a eb 86 d9 d4 08 00 45 00 ........ ......E.
+0010 02 dc 19 b7 40 00 40 06 9c d9 c0 a8 00 33 c0 a8 ....@.@. .....3..
+0020 00 08 05 94 00 50 35 a6 5d ad 4c c0 7c 0c 50 18 .....P5. ].L.|.P.
+0030 fa f0 81 bb 00 00 50 4f 53 54 20 2f 63 67 69 2d ......PO ST /cgi-
+0040 62 69 6e 2f 63 76 73 74 72 61 63 2f 4e 65 74 57 bin/cvst rac/NetW
+0050 6f 72 6b 41 75 64 69 74 2f 6c 6f 67 69 6e 20 48 orkAudit /login H
+0060 54 54 50 2f 31 2e 31 0d 0a 41 63 63 65 70 74 3a TTP/1.1. .Accept:
+0070 20 69 6d 61 67 65 2f 67 69 66 2c 20 69 6d 61 67 image/g if, imag
+0080 65 2f 78 2d 78 62 69 74 6d 61 70 2c 20 69 6d 61 e/x-xbit map, ima
+0090 67 65 2f 6a 70 65 67 2c 20 69 6d 61 67 65 2f 70 ge/jpeg, image/p
+00a0 6a 70 65 67 2c 20 61 70 70 6c 69 63 61 74 69 6f jpeg, ap plicatio
+00b0 6e 2f 78 2d 73 68 6f 63 6b 77 61 76 65 2d 66 6c n/x-shoc kwave-fl
+00c0 61 73 68 2c 20 61 70 70 6c 69 63 61 74 69 6f 6e ash, app lication
+00d0 2f 76 6e 64 2e 6d 73 2d 65 78 63 65 6c 2c 20 61 /vnd.ms- excel, a
+00e0 70 70 6c 69 63 61 74 69 6f 6e 2f 76 6e 64 2e 6d pplicati on/vnd.m
+00f0 73 2d 70 6f 77 65 72 70 6f 69 6e 74 2c 20 61 70 s-powerp oint, ap
+0100 70 6c 69 63 61 74 69 6f 6e 2f 6d 73 77 6f 72 64 plicatio n/msword
+0110 2c 20 2a 2f 2a 0d 0a 52 65 66 65 72 65 72 3a 20 , */*..R eferer:
+0120 68 74 74 70 3a 2f 2f 31 39 32 2e 31 36 38 2e 30 http://1 92.168.0
+0130 2e 38 2f 63 67 69 2d 62 69 6e 2f 63 76 73 74 72 .8/cgi-b in/cvstr
+0140 61 63 2f 4e 65 74 57 6f 72 6b 41 75 64 69 74 2f ac/NetWo rkAudit/
+0150 6c 6f 67 69 6e 3f 6e 78 70 3d 2f 63 67 69 2d 62 login?nx p=/cgi-b
+0160 69 6e 2f 63 76 73 74 72 61 63 2f 4e 65 74 57 6f in/cvstr ac/NetWo
+0170 72 6b 41 75 64 69 74 2f 77 69 6b 69 0d 0a 41 63 rkAudit/ wiki..Ac
+0180 63 65 70 74 2d 4c 61 6e 67 75 61 67 65 3a 20 7a cept-Lan guage: z
+0190 68 2d 63 6e 0d 0a 43 6f 6e 74 65 6e 74 2d 54 79 h-cn..Co ntent-Ty
+01a0 70 65 3a 20 61 70 70 6c 69 63 61 74 69 6f 6e 2f pe: appl ication/
+01b0 78 2d 77 77 77 2d 66 6f 72 6d 2d 75 72 6c 65 6e x-www-fo rm-urlen
+01c0 63 6f 64 65 64 0d 0a 41 63 63 65 70 74 2d 45 6e coded..A ccept-En
+01d0 63 6f 64 69 6e 67 3a 20 67 7a 69 70 2c 20 64 65 coding: gzip, de
+01e0 66 6c 61 74 65 0d 0a 55 73 65 72 2d 41 67 65 6e flate..U ser-Agen
+01f0 74 3a 20 4d 6f 7a 69 6c 6c 61 2f 34 2e 30 20 28 t: Mozil la/4.0 (
+0200 63 6f 6d 70 61 74 69 62 6c 65 3b 20 4d 53 49 45 compatib le; MSIE
+0210 20 36 2e 30 3b 20 57 69 6e 64 6f 77 73 20 4e 54 6.0; Wi ndows NT
+0220 20 35 2e 31 3b 20 53 56 31 3b 20 2e 4e 45 54 20 5.1; SV 1; .NET
+0230 43 4c 52 20 32 2e 30 2e 35 30 37 32 37 29 0d 0a CLR 2.0. 50727)..
+0240 48 6f 73 74 3a 20 31 39 32 2e 31 36 38 2e 30 2e Host: 19 2.168.0.
+0250 38 0d 0a 43 6f 6e 74 65 6e 74 2d 4c 65 6e 67 74 8..Conte nt-Lengt
+0260 68 3a 20 38 30 0d 0a 43 6f 6e 6e 65 63 74 69 6f h: 80..C onnectio
+0270 6e 3a 20 4b 65 65 70 2d 41 6c 69 76 65 0d 0a 43 n: Keep- Alive..C
+0280 61 63 68 65 2d 43 6f 6e 74 72 6f 6c 3a 20 6e 6f ache-Con trol: no
+0290 2d 63 61 63 68 65 0d 0a 0d 0a 6e 78 70 3d 25 32 -cache.. ..nxp=%2
+02a0 46 63 67 69 2d 62 69 6e 25 32 46 63 76 73 74 72 Fcgi-bin %2Fcvstr
+02b0 61 63 25 32 46 4e 65 74 57 6f 72 6b 41 75 64 69 ac%2FNet WorkAudi
+02c0 74 25 32 46 77 69 6b 69 26 75 3d 77 65 6c 65 61 t%2Fwiki &u=welea
+02d0 72 26 70 3d 77 65 6c 66 61 72 26 69 6e 3d 25 42 r&p=welf ar&in=%B
+02e0 35 25 43 37 25 43 32 25 42 43 5%C7%C2% BC

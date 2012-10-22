@@ -1,0 +1,171 @@
+文档名称：Forbid Setting Windows NT MAC Address
+文档维护：Xuefeng Chang(welfear@gmail.com)
+创建时间：2008年6月26日
+
+
+目录
+
+0 背景
+
+1 分析
+
+2 方法
+
+3 结论
+
+
+0 背景
+
+让用户随意修改网卡的MAC地址而不是使用本来的物理地址其危害和麻烦都是显然的。当我们想去实现相关
+功能的时候，我们发现MSDN提供的API有太多的限制。感谢yanky@dev.gsc.com用灰盒测试的方法找到了本文
+最后的结论。习惯性的，我们会直接去网卡驱动里找实现方法而不是用Win32 API。
+
+1 分析
+
+下面是唯一的一段关于直接查询网卡信息的文字描述:
+"Before an application can use IOCTL_NDIS_QUERY_GLOBAL_STATS,it must call the CreateFile function
+to open a handle to the network adapter. In this CreateFile call, the application passes a
+pointer to a null-terminated string that specifies the name of the device that NDIS registered.
+For NT-based operating systems, the application can retrieve the name from the ServiceName value
+of the "HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\NetworkCards\Nnn" key
+in the registry, where Nnn is the string for the adapter's instance number. The string should
+be of the form "\\.\Xxx", where Xxx is the string for the adapter's service name."
+
+可惜的是文字太少，还没有实质性的内容。那么，只好调试了。
+我们对比HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\NetworkCards\Nnn
+中的内容就可以找到网卡驱动的名字。下面是调试机器上的网卡。
+
+kd> !object \device\{6A665379-4AE7-45D1-9C36-B3B0471287F6}
+Object: 81652788 Type: (817a9ca0) Device
+ObjectHeader: 81652770
+HandleCount: 0 PointerCount: 3
+Directory Object: e10078f8 Name: {6A665379-4AE7-45D1-9C36-B3B0471287F6}
+
+哦，还真有这个东西。
+
+kd> !devobj 81652788
+Device object (81652788) is for:
+{6A665379-4AE7-45D1-9C36-B3B0471287F6} \Driver\rtl8139 DriverObject 8165e510
+Current Irp 00000000 RefCount 0 Type 00000017 Flags 00002050
+Dacl e12b5494 DevExt 81652840 DevObjExt 81652d88
+ExtensionFlags (0000000000) 
+AttachedTo (Lower) 8173f3e0 \Driver\PCI
+Device queue is not busy.
+
+kd> !drvobj 8165e510
+Driver object (8165e510) is for:
+\Driver\rtl8139
+Driver Extension List: (id , addr)
+(4e4d4944 8165e708) 
+Device Object list:
+81652788
+
+kd> dt _DRIVER_OBJECT 8165e510
++0x000 Type : 4
++0x002 Size : 168
++0x004 DeviceObject : 0x81652788 _DEVICE_OBJECT
++0x008 Flags : 0x12
++0x00c DriverStart : 0xf9cf1000
++0x010 DriverSize : 0x5200
++0x014 DriverSection : 0x8165baf8
++0x018 DriverExtension : 0x8165e5b8 _DRIVER_EXTENSION
++0x01c DriverName : _UNICODE_STRING "\Driver\rtl8139"
++0x024 HardwareDatabase : 0x8068ee90 _UNICODE_STRING "\REGISTRY\MACHINE\HARDWARE\DESCRIPTION\SYSTEM"
++0x028 FastIoDispatch : (null)
++0x02c DriverInit : 0xf9cf5480 RTL8139!DriverEntry+0
++0x030 DriverStartIo : (null)
++0x034 DriverUnload : 0xf988389b NDIS!ndisMUnload+0
++0x038 MajorFunction : [28] 0xf9872e6b NDIS!ndisCreateIrpHandler+0
+
+RTL8139这块网卡很多人使用。不过MajorFunction很有意思，居然设置在NDIS中。再看看别的，比如：
+IRP_MJ_DEVICE_CONTROL。
+
+kd> dd 8165e510 + 38
+8165e548 f9872e6b f98791f4 f9872d9c f98791f4
+8165e558 f98791f4 f98791f4 f98791f4 f98791f4
+8165e568 f98791f4 f98791f4 f98791f4 f98791f4
+8165e578 f98791f4 f98791f4 f9879010 f98791f4
+8165e588 f98791f4 f98791f4 f98791f4 f98791f4
+8165e598 f98791f4 f98791f4 f9886877 f9879415
+8165e5a8 f98791f4 f98791f4 f98791f4 f987bab9
+8165e5b8 8165e510 f987f5b4 00000000 0010000e
+
+kd> u f98791f4
+NDIS!ndisDummyIrpHandler:
+f98791f4 8bff mov edi,edi
+f98791f6 55 push ebp
+f98791f7 8bec mov ebp,esp
+f98791f9 8b4d0c mov ecx,dword ptr [ebp+0Ch]
+f98791fc 8b5160 mov edx,dword ptr [ecx+60h]
+f98791ff 56 push esi
+f9879200 57 push edi
+f9879201 8b7d08 mov edi,dword ptr [ebp+8]
+f9879204 8b4728 mov eax,dword ptr [edi+28h]
+f9879207 83c048 add eax,48h
+f987920a 8b30 mov esi,dword ptr [eax]
+f987920c 81fe4e444d50 cmp esi,504D444Eh
+f9879212 0f858c020000 jne NDIS!ndisDummyIrpHandler+0x31 (f98794a4)
+
+在网卡驱动初试化中会调用NdisIMInitializeDeviceInstance。怪不得，文档中肯定的说设备名字一定是
+GUID的形式，原来设备的相关初试化都在NDIS中进行。这样一来，本文所描述的方法有普遍性，因为所有的
+网卡的行为都是NDIS的，而常见的NDIS版本有两个：5、6。
+
+下面我们来过滤改变网卡MAC地址的时候会经过哪些IOCTL。经过实验得到0x0017000e和0x0017003e
+
+IOCTL_NDIS_QUERY_SELECTED_STATS 3
+IOCTL_NDIS_RESERVED 7
+
+这两个都不是我们想要的。顺便说一下，本来在改MAC地址的时候是不用重启机器的，而在用device filter
+过滤的时候，改变MAC地址会提示下次开机生效，后用直接HooK的方法才正常。
+
+无奈之下只好去翻NDIS的代码，还是去找NDIS4的老古董。
+
+如下：
+
+//
+// Fill in the NDIS request.
+//
+GlobalRequest->Request.RequestType = NdisRequestQueryStatistics;
+GlobalRequest->Request.DATA.QUERY_INFORMATION.Oid = *((PULONG)(Irp->AssociatedIrp.SystemBuffer));
+GlobalRequest->Request.DATA.QUERY_INFORMATION.InformationBuffer = MDL_ADDRESS (Irp->MdlAddress);
+GlobalRequest->Request.DATA.QUERY_INFORMATION.InformationBufferLength = MDL_SIZE (Irp->MdlAddress);
+GlobalRequest->Request.DATA.QUERY_INFORMATION.BytesWritten = 0;
+GlobalRequest->Request.DATA.QUERY_INFORMATION.BytesNeeded = 0;
+Status = (*Miniport->DriverHandle->MiniportCharacteristics.CoRequestHandler)(
+Miniport->MiniportAdapterContext,
+NULL,
+&GlobalRequest->Request);
+
+所以，用DeviceIoControl中设置Input为OID，并分配足够的内存就能成功。而最后一行的代码提醒了我们，
+和网卡驱动通信不单是IOCTL还有它自己注册的HANDLE，比如这里就是用CoRequestHandler这个handler。
+下面是所有的通过NdisMRegisterMiniport注册的handler：
+CheckForHangHandler、DisableInterruptHandler、EnableInterruptHandler、HaltHandler、HandleInterruptHandler
+InitializeHandler、ISRHandler、QueryInformationHandler、ReconfigureHandler、ResetHandler、SendHandler
+SetInformationHandler、TransferDataHandler、ReturnPacketHandler、SendPacketsHandler、AllocateCompleteHandler
+CoCreateVcHandler、CoDeleteVcHandler、CoActivateVcHandler、CoDeactivateVcHandler、CoSendPacketsHandler
+CoRequestHandler、CancelSendPacketsHandler、PnPEventNotifyHandler、AdapterShutdownHandler
+
+这里有ResetHandle和SetInformationHandler对我们来说很重要。当我们通过网卡的属性页设置MAC地址的时候
+发现网卡状态变化是Reset过程。还好，ResetHandle和SetInformationHandler的区别就是Reset会去注册表
+重新初试化而不是在内存中。当然如果有一天人家改成SetInformationHandler我们就要换方法了。
+
+
+2 方法
+
+下面的事情就比较清楚了，但还是有一个问题：我们如何及时修改注册表。如果我们用过滤设备或直接HOOK
+原设备，就要先保存原来的设置，并在开机时设置回去。而更简单的方法是使用注册表回调机制。在MSND中
+有一个函数可以实现：RegNotifyChangeKeyValue，但我们要在驱动里实现，所以这个方法的风险就在未公开
+的内核API上，很显然就是ZwNotifyChangeKey。
+ZwNotifyChangeKey(HANDLE KeyHandle,HANDLE Event,PIO_APC_ROUTINE ApcRoutine,PVOID ApcContext,
+PIO_STATUS_BLOCK IoStatusBlock,CompletionFilter,WatchTree,PVOID Buffer,ULONG BufferSize,
+BOOLEAN Asynchronous);在ifs DDK中有它的声明，看来微软并不反对我们使用它。
+最后说一下思路，首先找到HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\NetworkCards\N
+下的N值，然后打开HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002bE10318}\N
+保存networkaddress的值，最后在每次得到通知的时候写回去。
+
+
+3 结论
+
+防止改MAC用了一些小技巧，成功也有偶然的成分。不过安全总是相对的，在大部分时候并没有问题。
+市面上常见的修改MAC地址软件，比如smac、macshif、changemac等都是直接修改注册表后重启实现的，
+也不能绕过我们的方法。 

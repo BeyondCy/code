@@ -1,0 +1,372 @@
+文档名称：工具小结(Tools Tips)
+文档维护：Xuefeng Chang(welfear@gmail.com @welfear)
+文档日期：2010.10.17
+
+
+find . -name "*.java" | sed 's/.*\///' | \
+sort | uniq -c | grep -v "^ *1 " | sort -r
+
+短小精干！没错，在我开始认识它们的时候就是这样的感觉。
+工具总是为解决问题而存在的，然而在我选择的时候还是
+常常会有既生瑜何生亮的感叹。
+
+
+00. regex && grep
+
+
+正则表达式虽然不是工具，但每个工具都是它思想的延伸。
+grep其实是g(lobal)/re/p(rint)。下面是几个应用例子：
+
+grep '^word'    匹配以word为首的一行。
+grep 'word$'    匹配以word为尾的一行。
+grep 'x.y'      匹配x和y之间存在字符的一行。
+grep '.*'       匹配任意字符。*为0个或多个前一字符。
+grep '[chS]'    匹配c h S之一。
+grep '[A-Z]'    匹配A-Z的某一个字符。
+grep '[^!]'     匹配非!的字符。
+grep '^$'       匹配空白行。
+grep 'o\{2,5\}' 匹配2~5个o。
+
+-I      忽略二进制文件。
+-R      递推子目录。
+-n      显示行数。
+--color 高亮显示匹配字符。
+-c      只显示匹配行数。
+-v      输出不匹配的行。
+
+
+01. cat && tac && tee
+
+
+cat(conCATenate)用于串联文本，tac相反，倒序输出文本流。
+- 表示从标准输入，用于表示标准输入在几个串联文本中的顺序。
+
+-E 在行尾添加$。
+-v 输出不可见字符。
+-T 输出时将TAB转换为^I
+-n 在行前添加行号
+-b 只在非空白行前添加行号。
+
+cat - file1 - file2 - file3 > file
+
+将file1、file2、file3三个文件合并成一个文件，在每个文件开头
+都可以在标准输入中直接输入文本，按Ctrl-D结束输入，Ctrl-U
+删除当前行。也可以用shift+insert向标准输入粘贴文本。
+
+cat -vet file
+
+输出将文件中的非显示字符转义后的文本。
+
+cat - file > newfile
+
+在文件的开头插入文本。
+
+cat -nb file > newfile
+
+在行首插入行号。
+
+利用Shell的Here Document功能可以更方便的编辑单一标准输入。
+这样编辑时就和编辑命令行的情况一样了，Shell的快捷键也可以
+使用。例如：
+
+cat > file << EOF
+> file context
+> EOF
+
+cat file
+file context
+
+tee与cat相对，从标准输入读取数据再它输出到标准输出和文件。
+-a 追加模式输出至文件。
+-i 忽略中断信号。
+
+cat *.txt | tee bak1 bak2 #合并txt文件，并生成两个备份。
+
+
+02. head && tail
+
+
+head用于显示文本的头部，tail则显示文本的尾部。
+head和tail默认时分别会从头或从尾输出10行文本。
+-c 控制输出字节数。
+-n 控制输出行数。
+
+cat file | head -m | tail -n    #截取file中m-n行的内容。
+
+tail可以用-f参数监控文件的追加数据，常用于监控日志文件。
+tail -f /var/log/message
+
+watch是更常用的监控文件变化工具。
+watch -n1 -d /proc/meminfo
+
+
+03. expand && unexpand
+
+
+expand和unexpand用于转换文本中的制表位和对应字数的空格。
+
+-t 改变默认TAB对应的列数，默认TAB为8列。
+-a unexpand默认只转换行首的空格，-a表示转换所有。
+
+expand -60 file > newfile
+
+
+04. fold && fmt
+
+
+fold和fmt用于格式化文本。
+
+fold -s -w50
+
+fold默认在第80列开始折行，这和Linux Kernel Code Style相同。
+-w 改变默认开始折行的列数。
+-s 表示折行时不拆分单词。
+
+fmt -s -w80 -u
+
+fmt默认在第75列开始折行，并保持相同的缩进。
+-w 指定最大列数。
+-u 格式化多余的空格，单词间一个空格，句子间两个空格。
+-s 只格式化超出的行，不处理不足的行。
+
+
+05. nc && wget
+
+
+nc(netcat)是通过网络传输数据的工具。
+
+nc ip port              #client
+nc -l -p port           #server
+nc ip port < file       #send file
+
+-u 指示nc使用UDP协议传输数据，默认使用TCP协议。
+Client和Server连接后，即可通过标准输入或重定向文件交换数据。
+
+wget是网络下载工具。
+
+wget -r -np -nd (--accept=iso) URL/dir/ #下载dir中所有文件。
+wget i file_url_list.txt                #批量下载文件中URL。
+wget -c URL                             #断点续传方式下载。
+wget -m -k (-H) URL                     #镜像一个网站。
+
+
+06. echo && awk
+
+
+写入单行：
+
+echo 1 > /proc/sys/net/ipv4/ip_forward
+向/proc/sys/net/ipv4/ip_forward文件中写入字符"1"。
+
+
+读出单列：
+
+awk -F" " '{print $3}' /var/log/messages
+从/var/log/message文件输出以空格为分隔符的第三列。
+
+
+07. tr && sed
+
+
+tr用于简单的替换文本。
+tr -s "\t" "| " < file #将TAB替换为|，并去掉多余的空格。
+
+下面两个命令都是将小写字符转换为大写：
+tr [:lower:] [:upper:] < file
+tr "a-z" "A-Z" < file
+
+sed是流编辑器。
+
+sed 's/^$/d' file       #删除所有空行。
+sed 's/^[ \t]*$/d' file #删除所有只包含空格或者TAB行。
+sed 's/"//g' file       #删除所有引号。
+sed -i 's/ *$//' file   #删除行结尾的$字符。
+sed -i 's/old/new/g' *.c#替换文本。
+sed 's/patten/string&   #&用于替代patten。
+sed 's/^/> /' file      #在行首添加>字符。
+sed 's/$/$/' file       #在行尾添加$字符。
+
+cat            |  sed ':'
+cat -s         |  sed '/./,/^$/!d'
+tac            |  sed '1!G;h;$!d'
+grep           |  sed '/patt/!d'
+grep -v        |  sed '/patt/d'
+head           |  sed '10q'
+head -1        |  sed 'q'
+tail           |  sed -e ':a' -e '$q;N;11,$D;ba'
+tail -1        |  sed '$!d'
+tail -f        |  sed -u '/./!d'
+cut -c 10      |  sed 's/\(.\)\{10\}.*/\1/'
+cut -d: -f4    |  sed 's/\(\([^:]*\):\)\{4\}.*/\2/'
+tr -s ' '      |  sed 's/ \+/ /g'
+tr -d '\012'   |  sed 'H;$!d;g;s/\n//g'
+wc -l          |  sed -n '$='
+uniq           |  sed 'N;/^\(.*\)\n\1$/!P;D'
+rev            |  sed '/\n/!G;s/\(.\)\(.*\n\)/&\2\1/;//D;s/.//'
+basename       |  sed 's,.*/,,'
+dirname        |  sed 's,[^/]*$,,'
+xargs          |  sed -e ':a' -e '$!N;s/\n/ /;ta'
+paste -sd:     |  sed -e ':a' -e '$!N;s/\n/:/;ta'
+cat -n         |  sed '=' | sed '$!N;s/\n/ /'
+grep -n        |  sed -n '/patt/{=;p;}' | sed '$!N;s/\n/:/'
+cp orig new    |  sed 'w new' orig[/code:1:739eb4cef5]
+
+http://sed.sourceforge.net/sed1line_zh-CN.html
+
+
+08. cut && paste && join && rev && shred
+
+cut用于选择截取文件中的某些列。
+cut -d: -f1 /etc/passwd         #截取第1个:为分割符的字段。
+cut -c3-5 /etc/passwd           #截取每行的第3到第5个字符。
+cut -c 1-3,20,25- file          #多个字段的表示方式。
+
+paste用于按列合并文件。
+paste -d "," title name         #将头衔和名字对应起来。
+Tester,A
+Coder,B
+
+-d 指示用于合并的分隔符。
+-s 改变合并后数据的行和列。
+
+split将大文件按照行货字符数分成若干小文件。
+下列命令将file每隔3行分割，并将行和列转换后合并。效果是将
+文件长度缩短，文件宽度加长：
+
+split -l 3 file sp_file
+paste -s sp_file*
+
+FIXME! csplit
+FIXME! join
+
+rev file        #以相反的顺序打印每行内容。
+shred file      #用垃圾字符覆盖文件，用于删除数据。
+
+
+09. find && wc && xargs && diff && sum && md5sum
+
+
+find . -name '*.[hc]' | xargs wc -l #统计h/c文件行数。
+
+xargs可以将find的输出转化为wc的命令行参数。find -exec
+也有此功能但大量输出时可能会有溢出问题。
+
+wc
+-l 统计行。
+-m 统计字符。
+-w 统计单词个数。
+
+diff -urNp src dst > patch      #标准做法:-)
+patch -p0 patch
+
+sum file                        #产生文件的校验和以及块数。
+md5sum file                     #产生文件md5数字签名。
+
+
+10. sort && tsort && uniq
+
+
+sort -u -m file1 file2 #排序后合并多个文件，不显示重复行。
+
+sort -t: -k 1.3,5.7 -kgr 3 file
+
+以:为分隔符，对第1个字段的第3个字符到第5个字段的7个字符
+排序，得到结果后对第3个字段当作10进制数反向排序。
+
+-u 只打印不同的行。
+-m 合并不同文件。
+-t 指示分隔符。
+-k 指示字段范围。
+-g 按照数字排序，-n表示按照整数排序。
+-r 反序输出。
+
+tsort进行有向图拓扑排序，常用于查找依赖关系。
+
+cat dep
+1 2
+2 3
+3 4
+tsort dep
+1
+2
+3
+4
+
+uniq用于去掉重复字符，一般已经被sort处理过。
+-c        统计重复行数。
+-u        显示没有重复的行。
+-d        显示重复的行。
+-f n      跳过n个字段进行比较。
+-s n      跳过n个字符进行比较。
+-w word   只对word字符进行比较。
+
+uniq -f 3 /var/log/message。
+
+
+11. tar && rar
+
+
+tar (jz)xvf file.tar(.bz2/gz)           #解压缩。
+tar (jz)cvf file.tar(.bz2/gz) file      #压缩。
+tar (jz)tvf file.tar(.bz2/gz)           #查看。
+unrar x file.rar                        #解压缩rar文件。
+
+
+12. rename
+
+
+rename "s/petten/new/" *
+
+
+13. packet && kernel
+
+dpkg -S `whick command`
+apt-get -d source packet_name
+apt-get install packet_name
+
+make
+make modules_install
+make install
+mkinitramfs -o kernel_name /lib/modules/kernel_version
+
+
+14. Bash
+
+
+切换目录：
+
+cd -            相当于cd $OLDPWD
+pushd dir       把目录压栈。
+pushd +n        跳转到第n个目录。
+poped +n        弹出第n个目录。
+dir -v -p       查看当前目录堆栈。
+> file          用于清空文件。
+
+特殊字符：
+
+?        匹配任何单一字符。
+*        匹配任何字符。
+[]       匹配某一范围字符，比如[a-z]，代表小写字母。
+[!]      代表非此范围字符。
+~        代表用户主目录。~name表示name的主目录。
+$        表示变量取值。
+&        表示当前命令在后台执行。
+\        表示续行。
+|        表示管道。
+;        命令分隔符。
+< >      重定向符号。
+``       命令替换。复杂的命令应该使用$()的形式。
+\tab     补齐字符串。
+&&       先执行前一个命令，如果成功再执行后一个。
+
+设置别名：
+
+alias clog='> /var/log/messages'
+alias diff='diff -urNp'
+alias dmesg='dmesg | less'
+alias e='vim'
+alias find='find . -name'
+alias grep='grep --color -InRE'
+alias log='vim /var/log/messages'
+alias ls='ls --color=auto -lSh'
+alias tag='ctags -R --c++-kinds=+p --fields=+iaS --extra=+q'
