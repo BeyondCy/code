@@ -1,0 +1,330 @@
+文档名称：模式——软件开发者的共同语言
+文档维护：Xuefeng Chang(welfear@gmail.com)
+文档日期：2012.4.8
+
+
+
+设计模式是软件行业广为人知的设计方案集合，讨论设计模式的过程更像是一种悟道的
+过程。在实际的软件项目开发过程中，它不仅可以帮助初级设计者找到解决问题的方案，
+也可以帮助项目团队快速达成一致消除争议，以便更好的推进项目进度和项目执行力度。
+而对于依靠各种流行软件框架工作的软件工程师来说，理解设计模式就是理解手头的
+“锤子”，这无疑是十分重要的。
+
+
+
+一：创建型
+这些模式描述了对象的创建方式。对象从职责上有两类，也就是管理和功能。
+一个对象应该只有单一职能，管理或功能，而对象的创建则是对象管理的重要方面。
+
+全局唯一对象：
+
+singleton/Double-Checked Locking(multithreading)
+单键的最简单实现方式就是利用静态变量自动构造和析构：
+GetInstance(void) {
+    static singleton;
+    return &singleton;
+};
+单键在第一次调用时初始化，在模块卸载时析构。在多线程环境下单键的分配或
+调用构造函数会面临同步问题，而Double-Check方案兼顾了性能，避免频繁的使用锁。
+
+多个对象：
+
+    同类对象：
+
+        复制同类对象：
+        prototype
+        对象提供了virtual clone方法。这种方式可以和操作系统fork进程的
+        方式类比，新对象就是父对象的副本。
+
+        构造同类对象：
+        builder
+        将构造功能抽象为一类对象，不同的构造对象产生不同的同类对象：
+        product1 = Director(new Builder1);
+        product2 = Director(new Builder2);
+
+        单工厂：
+        Factory Method
+        由继承类决定如何创建产品：
+        class Creator {
+            virtual FactoryMethod();
+            Operation() {
+                return FactoryMethod();
+            }
+        };
+        Creator *creator = new ConcreteCreator();
+        prdouct = creator->Operation();
+
+    多类对象：
+
+        多工厂：
+        Abstract Factory
+        抽象工厂类，不同工厂创建不同产品：
+        class AbstractFactory {
+            virtual CreateProductA();
+            virtual CreateProductB();
+        };
+        ConcreteFactory1 *p1 = new ConcreteFactory1();
+        product1 = p1->CreateProduct1();
+        product2 = p1->CreateProduct2();
+
+
+
+二：结构型
+这些模式描述了不同类的接口结构关系，使不同接口的对象工作在一起。
+
+接口：
+
+    建立统一接口：
+    Facade
+    在没有统一接口时按需求抽象接口。
+
+    Proxy
+    避免直接访问被代理的对象：
+    class Subject {
+        virtual Operation();
+    };
+    class Proxy : public Subject {
+        virtual Operation() {
+            subject->Operation();
+        }
+    };
+    Proxy(new ConcreteSubject());
+
+
+
+    统一不同接口：
+    Adapter
+    将相似的接口统一：
+    class Adapter {
+        Operation() {
+            Adaptee->SpecialOperation();
+        }
+    };
+    Adapter *p = new Adapter(new Adaptee);
+    p->Operation();
+
+    统一不同实现接口：
+    Bridge
+    class Bridge {
+        virtual OperationImp();
+    };
+    class Abstraction {
+        Operation() {
+            bridge->OperationImp();
+        }
+    };
+    p = Abstraction(new ConcreteBridge());
+    p->Operation();
+
+结构：
+    统一结构：
+    按照统一的方式访问对象。
+        Tree:
+        Composite
+        class Component {
+            virtual Operation();
+        };
+        class Composite : public Component {
+            virtual Operation();
+            virtual Add();
+            virtual Delete();
+            vritual GetChild();
+        };
+        class Leaf : public Component {
+            virtual Operation();
+        };
+        composite->GetChild(0)->Operation();
+
+
+        Key/Value:
+        Flyweight
+        class FlyweightFactory {
+            Flyweight *GetFlyweight(Key);
+        };
+        class Flyweight {
+            virtual Operation();
+        };
+        Flyweight *p1 = new FlyweightFactory("Flyweight1");
+
+        List:
+        Decorator
+        class Decorator {
+            virtual Operation() {
+                component->Operation();
+            }
+        };
+        class ConcreteDecorator {
+            virtual Operation() {
+                Decorator::Operation();
+                MyOperation();
+            }
+            MyOperation();
+        };
+        Decorator *p = new ConcreteDecorator(
+                            new ConcreteDecorator1(
+                            new ConcreteDecorator2(
+                            new ConcreteDecorator3)));
+        p->Operation();
+
+
+
+三：行为型
+这些模式描述了不同对象之间的相互影响关系，它们常被用在各种框架之中，协调
+框架中不同类型对象有效工作。
+
+Iterator
+参考STL Iterator或Java Iterator。由于语言风格影响，STL更强调复制性，
+而Java则偏重引用，采用COW技术。
+
+Memento
+Memento用于控制对象的内部状态，实现对类内部“拍照”：
+class Originator {
+    Memento *CreateMemento();
+};
+class Memento {
+    friend class Originator;
+private:
+    GetState();
+    SetState();
+    DumpState();
+};
+Memento memento = originator->CreateMemento();
+originator->ChangeState();
+originator->RestoreState(memento);
+
+
+Template Method
+Template Method与Factory Method结构相似而目的不同：
+class AbstractClass {
+    virtual Operation1();
+    virtual Operation2();
+    TemplateMethod() {
+        Operation1();
+        Operation2();
+    }
+};
+AbstractClass *p = new ConcreteClass();
+p->TemplateMethod();
+
+Visitor
+Visitor与Abstract Factory结构相似而目的不同，前者实现不同的元素对应
+不同的访问方式：
+class Visitor {
+    virtual VisitConcreteElement(ConcreteElement *);
+};
+class ConcreteVisitor {
+    virtual VisitConcreteElement(ConcreteElement *);
+};
+class Element {
+    virtual Accept(Visitor *visitor);
+};
+class ConcreteElement {
+    virtual Accept(Visitor *visitor) {
+        visitor->VisitConcreteElement(this);
+    }
+};
+Visitor visitor = new ConcreteVisitor();
+Element *element = new ConcreteElement();
+element->Accept(visitor);
+
+
+Chain of Responsibility
+Chain of Responsibility与Decorator结构相似而方式不同，前者将请求向后发送至
+最后一个对象，而Decorator中每个对象都会处理当前的请求。参考Windows的Hook机制
+和NT的DeviceTree机制，每个对象都机会处理相关请求并可决定是否向后传递当前请求。
+class Handler {
+    virtual Handle();
+    Handler *next;
+};
+class ConcreteHandler {
+    virtual Handle() {
+        if (next)
+            next->Handle();
+        else
+            MyHandle();
+    }
+    MyHandle();
+};
+Handler *p = new ConcreteHandler(
+                new ConcreteHandler1(
+                new ConcreteHandler2));
+p->Handle();
+
+Observer
+实现异步更新机制时都会用到观察者模式，例如UPNP协议：
+class Subject {
+    virtual Attach();
+    virtual Detach();
+    virtual Notify();
+};
+class Observer {
+    virtual Update();
+}
+Subject *p = new ConcreteSubject();
+Observer *p1 = new ConcreteObserver();
+Observer *p2 = new ConcreteObserver();
+p->Attach(p1);
+p->Attach(p2);
+p->Notify();
+
+Strategy
+Strategy与Bridge类似，前者强调的是一组算法作为一个整体成为有相同接口的类，
+而后者只强调相同接口的转接关系。比如Linux VFS是一种Bridge，而NT Object则是
+Strategy：
+class Context {
+    virtual Operation() {
+        strategy->interface();
+    }
+    Strategy *strategy;
+};
+class Strategy {
+    vritual interface();
+};
+class ConcreteStrategy {
+    virtual interface();
+};
+Context *context = new Context(new ConcreteStrategy());
+context->Operation();
+
+State
+State用于实现有限状态机。与Stragegy相比，State模式中的状态对象具有自动切换
+状态的能力：
+class Context {
+    Operation();
+    ChangeState();
+};
+class State {
+    virtual Handle(Context *);
+};
+class ConcreteState {
+    virtual Handle(Context *context) {
+        if (true)
+            context->ChangeState();
+    }
+};
+
+Command
+Command模式提供了一种更通用的框架抽象，它定义了Command, Receiver, Invoker之间
+交互接口：
+class Command {
+    virtual Execute();
+};
+class Receiver {
+    Action();
+};
+class Invoker {
+    Invoke() {
+        command->Execute();
+    }
+    Command *command;
+};
+class ConcreteCommand {
+    virtual Execute() {
+        receiver->Action();
+    }
+    Receiver *receiver;
+};
+Invoker *invoker = new Invoker(
+                        new ConcreteCommand(
+                            new Receiver()));
+invoker->Invoke();
