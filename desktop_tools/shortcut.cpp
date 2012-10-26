@@ -74,12 +74,25 @@ static HWND GetCurrentWindow(void)
 	return GetForegroundWindow();
 }
 
+static void setWindowFlags(HWND hwnd, LONG_PTR flags, bool enable)
+{
+	LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+	if (style & flags) {
+		if (enable)     return;
+		else            style &= ~flags;
+	} else {
+		if (enable)     style |= flags;
+		else            return;
+	}
+	SetWindowLongPtr(hwnd, GWL_STYLE, style);
+}
+
 static void moveWindow(HWND hwnd, PRECT rect)
 {
 	LONG width = rect->right - rect->left;
 	LONG height = rect->bottom - rect->top;
 	if (width && height) {
-		ShowWindow(hwnd, SW_SHOWNA);
+		setWindowFlags(hwnd, WS_MINIMIZE | WS_MAXIMIZE, FALSE);
 		MoveWindow(hwnd, rect->left, rect->top, width, height, TRUE);
 		ForceWindowForeground(hwnd);
 	}
