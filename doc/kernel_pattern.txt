@@ -1,0 +1,490 @@
+文档名称：内核中的设计模式(design pattern in kernel)
+文档维护：Xuefeng Chang(welfear@gmail.com)
+文档创建：2012.11.1
+
+
+创建型
+
+
+Object Pool
+
+Object Pool模式可以提升性能，尤其是在对象的分配、初始化成本高，使用频率高
+但使用时间短的情况下。对象池可以设置对象池的大小和回收时间缓存预分配的对象。
+NT和Linux都有简单的预分配缓存对象的机制，也就是Lookaside Cache机制。NT的
+对象管理器使用延迟删除和垃圾回收机制实现真正意义上的对象池。在调用NtClose
+关闭对象之后，对象使用的内存空间并不马上回收，而是挂在已删除对象列表之中，
+并且被设置为删除。在新生成对象时，对象管理器先去查找已删除的同类对象。内核
+定时启动垃圾回收工作线程回收过多的已删除对象。
+
+Prototype
+
+Prototype模式可设定类型的对象创建实例，通过拷贝这些原型创建新对象。例子如下：
+class Make {
+public:
+    Make(Object1 *o1, Object2 *o2...);
+    Object1 *make_c1(void) {c1->clone()}
+    Object2 *make_c2(void) {c2->clone()}
+    ......
+};
+Linux中有一个很典型的应用Prototype模式的系统调用——clone。它体现了Linux Kernel
+开发者对进程、线程以及共享资源的理解。clone中flags参数可以指使clone所需的资源，
+可以是文件系统信息或I/O环境信息或IPC资源或网络信息或地址空间，而是否clone地址
+空间决定了系统会产生一个新的线程还是一个新的进程。
+更有趣的是，操作系统还会提供浅拷贝的功能。NT的系统调用NtDuplicateObject可以在
+不同的进程空间中复制内核对象的引用。常见的场景是使本进程也可以访问其它进程打开
+系统资源。Linux提供了dup和dup2两个系统调用，它们可以实现进程内文件描述符复制，
+dup2则主要用于抢占标准输入或标准输出描述符位置。Linux还存在着一种自动的浅拷贝
+机制——Unix域。它可以在发送和接收两者之间传递多个文件描述符，并自动为接受进程
+建立可用的文件描述符，提高了共享文件的效率。
+
+Singleton
+
+Singleton模式提供访问类的全局实例并且只有一个，它封装了类的初始化时间和方式。
+这是一个简单又复杂的模式。习惯面向过程的程序员常常将它用来代替全局变量，以规避
+团队编程规范中不许使用全局变量的条款。
+
+在内核开发中，开发者通常是熟悉C语言的程序员，他们并不避讳直接使用全局变量。原因
+是参与开发的程序员大多经验丰富，并有相当的程序设计能力。但从为应用程序提供服务
+的角度看，内核有不得不设计系统调用读或者写它内部的某些全局变量。比如Windows的：
+BOOL SystemParametersInfo(UINT Action, UINT Param, PVOID Param, UINT WinIni);
+Action包括了10个不同的种类，每个种类的Param都有相应的全局的内核数据，两者组合
+起来大概可以表示上百项不同的内容。
+
+NT中存在一个更加奇特的函数，它未被微软公开却拥有着比官方文档更丰富的说明描述。
+尽管MSDN中强调该API有可能在未来修改，但真有人相信吗？NtQuerySystemInfomation，
+一个由5000+行代码实现的函数。这个霸气的函数说明了一个简单的道理，“清规戒律”
+只适用于能力不足的人。通过C struct传递内核数据并不是一种讨巧的方法，而Windows
+开发者似乎也没有更好的办法，他们在struct的第一项中放置cbSize，期望在以后的变化
+里，Size就代表Version。Linux就聪明多了，如果Linux就是CUI的天下，那么为什么不
+直接给它们字符串呢？通过特殊的文件系统，用简单的文件函数就读写内核数据，连格式
+转换都省了。其实NT中也有类似的机制，特殊的树形结构除了文件系统之外，还可以是
+NT特有的registry。注册表中的一些特殊键直接映射到内核变量上，因此通过注册表API
+便可可访问内核变量，只不过这种机制常常由系统自带的软件使用而很少有人知道罢了。
+不管怎么说，无论是结构体还是字符串都无法避免对数据版本的理解，形式反而是次要的。
+那么C++中Singleton到底如何呢？
+class Singleton {
+public:
+    static Singleton *instance(void) {
+        static Singleton *_instance = 0;
+        if (!_instance)
+            for (_instance = singleton();
+                 _instance && strcmp(name, s->name);
+                 _instance = _instance->next);
+        return _instance;
+    }
+protected:
+    Singleton(const char *name) : name(name), next(0) { assert(this->name); }
+    static Singleton *singleton(void) {
+        static Singleton Singleton("default");
+        return &Singleton;
+    }
+    static void RegisterSingleton(Singleton *singleton) {
+        Singleton *s = Singleton::singleton();
+        while (s->next)
+            s = s->next;
+        s->next = singleton;
+    }
+private:
+    const char *name;
+    Singleton *next;
+};
+class Singleton1 : public Singleton {
+public:
+    Singleton1(void) : Singleton("1") {
+        RegisterSingleton(this);
+    }
+};
+static Singleton1 Singleton1;
+
+最开始的版本打算用std::map组织name和singleton，但最后还是基于简单的链表实现。
+这个例子包括了实现Singleton模式的各种技巧，本例的设计以自然为原则，工程中使用的
+代码或多或少会根据不同的原则有所修改。在第一次调用Singleton::instance()时初始化
+实例可以避免集中初始化大量的Singleton引起的性能问题，又可以防止过早初始化带来的
+初始化依赖问题。但如果必须尽早初始化，那么还需要再添加一个引爆器：
+class Singleton {
+    struct Creator {
+        ObjectCreator(void) { 
+            Singleton::instance();
+        }
+    };
+    static Creator creator;                          
+};
+
+Builder
+
+Builder模式将复杂的对象分解几个不同的部分，不同的Builder可以对不同部分按照不同
+方式生成结果：
+class Builder {
+public:
+    virtual void makePart1(Element *) = 0;
+    virtual void makePart2(Element *) = 0;
+    virtual void makePart3(Element *) = 0;
+};
+Maker::make(stream)
+{
+    while (element = stream->next()) {
+        switch (element.type()) {
+        case part1:
+            builder->makePart1(element);
+            break;
+        case part2:
+            builder->makePart2(element);
+            break;
+        case part3:
+            builder->makePart3(element);
+            break;
+        default:
+        }
+    }
+}
+maker.setBuilder(&Builder1);
+maker.make(stream);
+
+内核内部的创建型模式很少见，因为内核模块结构简单，既没有面向对象语言提供的多态
+机制也不需要想办法替换new操作符。而系统调用接口常常被设计成功能明确单一，具有
+良好的正交性。然而NT中却存在特例：
+NTSTATUS NtCreateSection(PHANDLE SectionHandle, ACCESS_MASK DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes OPTIONAL,
+    PLARGE_INTEGER MaximumSize OPTIONAL, ULONG SectionPageProtection,
+    ULONG AllocationAttributes, HANDLE FileHandle OPTIONAL);
+内核是按照应用程序提供的文件句柄创建Section内核对象的。最后的FileHandle应该是
+NtCreateFile生成的句柄，按照MSDN上的描述这里的File可以是：Files, File Streams,
+Directories, Changer Device, Tape Drives, Communications Resources, Consoles,
+Mailslots Pipes, 笔者再补充一个socket。其实就是内核中所有存在的文件系统驱动和
+设备驱动所创建的文件或设备。
+
+
+结构型
+
+
+Facade
+
+Facade模式为复杂的系统封装一个简单的接口，并且可以单独访问子系统。操作系统的
+系统调用是一种相对简单的API，它们封装了操作系统内部若干子系统与子系统之间的
+复杂细节。同时操作系统也会提供加载内核模块的机制用以扩展内核结构，而且将内核中
+的部分代码以内核模块的形式加载可以减少编译内核的时间，提高开发者的工作效率。
+
+Proxy
+
+Proxy模式可以控制对象的访问权限，改变对象的访问方式，使对象和对象的访问方式
+相分离。在C++中，基本的对象方式是指针或引用，而指针或引用都不那么“智能”，
+标准库提供了基于代理模式的智能指针弥补这些不足，如C++98引入而在C++11中废弃的
+auto_ptr，C++11引入shared_ptr和unique_ptr（替代auto_ptr）。操作系统并不信任
+应用层的程序，它为应用程序提供了间接的内核对象访问机制。应用程序并不能直接获得
+内核对象指针，在Linux中提供的是fd而在NT中则是handle。内核负责根据相应的Key找到
+对应的内核对象，并继续完成该系统调用功能。特别的，NT内核使用的handle还能表示
+更多语义，handle的最后2位保留给应用程序使用，而高位表明该handle是系统全局句柄
+或是当前进程的句柄。
+
+Adapter
+
+Adapter模式将一类的接口转换为符合期望的另一种接口，使旧组件匹配新的系统接口。
+可能是下面这种形式：
+class Adapter: public Target, private Legacy {
+};
+
+或者：
+class Adapter: public Target {
+public: Adapter(Adaptee *);
+};
+
+NT在设计之初的目标便是超越Unix，兼容POSIX、OS/2、Windows等不同的子系统。NT并不
+在系统调用接口基础上直接兼容各种子系统，而是借助各种Adapter动态链接库适配不同的
+接口。在一种系统上兼容另一种系统通常还会需要一个该子系统的管理进程，用于维护该
+子系统的公共数据，例如管理Windows子系统的csrss进程。而其它子系统在操作系统发展
+过程中被逐步削弱不见了踪影。POSIX接口的实现被放在了C Runtime Library中，Win32
+子系统提供的功能足够丰富以支撑POSIX，然而由于设计理念不同，兼容接口在细节上仍然
+稍有不同。除此之外，socket与winsock、OpenGL与DirectX等都是用NT原生API以Adapter
+的方式兼容其他不同标准的接口。
+另一个相反的例子是Wine，一个在Linux平台上兼容Windows的开源项目。Wine有20年的发展
+历史，并涉及到了很多的内核设计技术，然而更难的是兼容一个没有足够文档和实现参考的
+系统。
+
+N.B. Wine包含了一系列类似Windows的Adapter动态链接库和WineServer，为了兼容多种
+Unix系统，它本身并不包含内核模块，但一个代号龙井的Wine衍生项目却单独为Linux
+开发了Wine的内核模块。
+
+N.B. 另一个号称兼容Android的项目也是使用Adapter模式？不知道，但闭源的Adapter
+兼容开源的Adaptee不都是可耻的吗？
+
+Bridge
+
+Bridge模式的目标是从设计中抽象出其实现，使两者可以独自改变。这简直就是禅语，只要
+是谈及设计模式的资料基本都会提到这句话。但Bridge模式的原则其实很简单，就是别在
+滥用继承了，并列举了一个通过继承机制实现的糟糕设计。一个窗口系统需要兼容Windows,
+Linux, MacOS三种平台，而窗口本身又有toplevel, child, popup三种。如果用继承方式
+设计，那么最后我们将得到3 * 3种类。如果系统中扩充了dialog, button, label, date,
+editor,    combobox之后，数量将会是3 * 6。但如果用组合方式设计只需要实现3 + 6个类。
+Bridge将m * n降低到与m + n。
+内核需要兼容各种体系结构，然而每种体系结构的硬件细节并不相同，内核是如果做到的？
+这个问题首先和软件的分发方式有关，开源的Linux可以提供相应的编译参数，让用户自己
+根据目标机器选择编译参数，而闭源NT就不得不通过安装程序检测相关硬件信息了，安装
+程序自带所有支持的硬件体系相关的动态链接库，并根据刺探硬件信息选择对应的文件，
+最后重名为hal.dll供启动内核使用。
+大部分内核模块都是与硬件无关的，少数功能需要硬件提供的机制支持，例如内存管理、
+线程调度、中断管理、同步机制等。从全局的角度看，Linux的调度管理确实是一种Bridge
+模式，此类代码是如此少见而又难得。我们知道，Linux按照POSIX标准的要求实现了5种
+调度策略：(SCHED_NORMAL, SCHED_BATCH, SCHED_IDLE), (SCHED_RR, SCHED_FIFO)。其中
+前三种是由公平调度类(sched_fair)实现的，后两种是由实时调度类(sched_rt)实现的。
+调度类结构定义了调度类的接口：
+struct sched_class {
+    next                : 下一个调度类指针
+    enqueue_task()      : task入队
+    dequeue_task()      : task出队
+    yield_task()        : task让出cpu
+    pick_next_task()    : 选择下一个被调度task
+};
+在真正进行调度时，调度管理器会调用context_switch函数，硬件相关的操作都封装在它
+里面，主要有：switch_to和entry_lazy_tlb。前者负责跳转到新线程上下文，后者冲刷
+CPU中MMU的相关TLB。每种硬件体系模块都提供了这两个函数，并在编译时已经建立好正确
+的链接，这种特殊的Bridge竟然有编译器的参与。
+
+Composite
+
+Composite模式描述了一种用树形结构组织对象的方式，它允许单一访问对象或递归访问
+多个对象。C++11(gcc 4.6.0)代码如下：
+class Component {
+public:
+    virtual void do(void) = 0;
+};
+class Leaf : public Componet {
+public:
+    void do (void) {}
+};
+class Composite : public Component {
+public:
+    void do(void) {
+        for (auto index : children)
+            index->do();
+    }
+    void add(Component *component) {
+        children.push_back(componet);
+    }
+private:
+    std::list<Component *> children;
+};
+
+文件系统是一种更加抽象的Composite模式。目录被看做是特殊的文件，也就是Composite的
+add可基于Component接口实现。无论是NT的NtQueryDirectoryFile或者Linux的getdents，
+它们都将目录的查询当成是目录文件的一次读过程。如果当前目录的文件足够过而调用者
+提供的缓冲区不足，而调用者若要遍历整个目录必然要进行多次调用，每次的读取位置便是
+由文件seek操作的文件偏移记录的。
+内核同样善于用树形结构组织各种内核对象，例如NT存在的对象管理子系统。Linux用结构
+kobject和对应的辅助函数管理数据：
+struct kobject {
+    struct list_head entry;
+    struct kobject *parent;
+    struct kset *kset;
+    struct kobj_type *ktype;
+    struct sysfs_dirent *sd;
+    struct kref kref;
+};
+kref用于访问计数，list_head用于连接同类对象，parent指向父亲，sd代表目录结构
+并包含了孩子对象。ktype中包括了针对kobject的各种操作。
+
+Decorator
+
+Decorator模式用于动态组合相关对象依次完成一系列操作。C++代码如下：
+class Decorator {
+public:
+    explicit Decorator(Decorator *d = 0) : d(d) {}
+    virtual ~Decorator(void);
+    virtual void do(void) {
+        d->do();
+    }
+private:
+    Decorator *d;
+};
+class Decorator1 : public Decorator {
+public:
+    explicit Decorator1(Decorator *d = 0) : Decorator(d) {}
+    virtual ~Decorator1(void);
+    void do(void) {
+        Decorator::do();
+    }
+};
+class Decorator2 : public Decorator {
+public:
+    explicit Decorator2(Decorator *d = 0) : Decorator(d) {}
+    virtual ~Decorator2(void);
+    void do(void) {
+        Decorator::do();
+    }
+};
+Decoratoor *d = new Decorator1(new Decorator2());
+d->do();
+
+NT的设备驱动管理使用了类似的机制管理各种硬件的驱动程序。NT I/O内核子系统动态生成
+设备栈，以文件访问为例：
+1.应用程序发起文件I/O请求。
+2.内核查找卷设备，将请求发送给卷设备对应的文件系统驱动。
+3.文件系统驱动有上层过滤驱动和下层过滤驱动和功能驱动（也就是它自己）。
+4.如果没有缓存，文件系统驱动将请求发送到下面的磁盘设备驱动。
+5.磁盘设备驱动同样有上层过滤驱动和下层过滤以及功能驱动三部分，请求换为SCSI形式。
+6.接下来请求被发送到磁盘驱动器设备驱动，它访问真正的硬件设备，读写相应数据。
+
+NT希望这个过程是可以动态配置的，上层驱动只需要将请求发送给下层驱动，但并不需要
+了解下层驱动。这些配置信息保存在注册表：HKLM\SYSTEM\CurrentControlSet\Enum中。
+而驱动程序只需要在调用I/O子系统提供的内核函数即可向下传递请求：
+NTSTATUS IoCallDriver(PDEVICE_OBJECT DeviceObject, PIRP Irp);
+
+Private Class Data
+
+Private Class Data模式常用来解决面向对象语言的语法带来的工程问题。C++类的声明
+通常会放在头文件中，这会使：
+
+1.每次修改私有方法或变量都可能引起大范围的编译。
+2.const变量必须在类初始化时便要决定值。
+3.类成员变量名和类方法名冲、方法参数名冲突。
+4.不同的成员变量不能分组区分访问。
+5.暴露类的私有成员和数据结构。
+好吧，其实也没有那么糟糕，除了1。不过，只要修改头文件之后尽快启动编译器就可以了。
+
+因此，应用该模式的类应该这样设计：
+class ClassPrivate;
+class Class {
+private:
+    ClassPrivate *data;
+};
+
+在操作系统中这种模式却另有妙用：
+当nIndex为GWLP_USERDATA时，它返回的是通过相应的Set函数设置的自定义指针。
+ATL库巧妙的使用过私有指针。与MFC或Qt库不同的是，ATL库将hWnd与ATL类的对应关系
+放在该私有指针中，利用系统提供的hWnd查找窗口对象的机制查找hWnd与类的关系。其它
+图形库会自行建立索引关系，但降低了性能却又增加软件复杂度。
+
+Linux fs.h: struct file {
+/* needed for tty driver, and maybe others */
+void *private_data;
+};
+本来为tty驱动提供的私有指针却在实现epoll机制用来，
+struct eventpoll *ep = file->private_data;
+
+私有数据不但可以用组织内部程序，还可以用于建立该对象与其它对象之间的联系。
+
+
+行为型
+
+
+Null Object
+
+Null Object模式为系统提供了一个默认的行为，也就是什么都不做。Null Object模式
+往往提供了一种语义，增强了系统的概念完整性。例如Linux系统中的/dev/null设备，
+它在原有体系中补充了一个特例，在不违反原有原则的基础上实现了一类特殊的功能。
+NT中也有一个类似的例子：Raw File System Driver。如果NT系统中的文件系统驱动都
+未能成功地挂载到某个磁盘设备上时，NT会将Raw挂载到该磁盘设备。Raw驱动会将读写
+请求发送到它下层的磁盘设备驱动，最大程度上减少卷设备挂载失败对系统的影响。
+Null Object提高了系统的容错能力并补充了一类特例，既有合理性又具有特殊性。
+
+Strategy
+
+Strategy模式是通过定义一系列接口将实现细节封装起来，使得它们能在不同的情况下使用
+不同的实现。Strategy模式在内核中非常常见，下面是C++代码：
+class Context {
+public:
+    void LookupStrategy(int type) {
+        if (type == 1)
+            current = new Strategy1();
+        else if (type == 2)
+            current = new Strategy2();
+        else if (type == 3)
+            current = new Strategy3();
+    }
+    void do(void) {
+        current->ops();
+    }
+private:
+    Strategy *current;
+};
+class Strategy {
+public:
+    void ops(void) {
+        strategy->do();
+    }
+private:
+    virtual void do(void) = 0;
+};
+class StrategyN : public Strategy {
+private:
+    void do(void) {}
+};
+
+由于用户态程序不能直接访问驱动程序，那么内核必须在两者之间建立桥梁。比如VFS，
+它在Linux中相当于Context和Stragtegy中的共同方法两部分，而各种文件系统驱动就是
+不同的Strategy。应用程序访问不同的路径时，VFS会找到相应的文件系统驱动并建立文件
+描述符与Stragte的关系。
+更重要的是在内核中Context可以动态匹配应用程序的请求和当前已经注册的模块。匹配的
+方式可以是某种路径，也可以直接将原始数据发送给已经注册的模块对其进行识别。
+在Linux中mount, load executable file, lookup file path都会触发这种自动匹配过程，
+它们有相似的结构和类似的工作方式。
+
+N.B. 值得一提的是内核中的网络结构，NT的NDIS网络子系统和Linux的if/proto管理，它们
+采用了Strategy和Decorator结合模式。网络子系统会将协议驱动和数据链路驱动分别与
+接收到的数据包匹配，并将处理过的数据向后发送。
+
+Template Method
+
+Template Method模式定义一个操作中的算法的骨架，将一些步骤延迟到子类，这样子类
+重新定义算法的某些步骤不改变算法的结构。
+class Template {
+public:
+    void do(void) {
+        step1();
+        step2();
+        step3();
+    }
+private:
+    virtual void step1(void) = 0;
+    virtual void step2(void) = 0;
+    virtual void step3(void) = 0;
+};
+class BaseMethod {
+private:
+    void step1(void) {}
+    void step2(void) {}
+    void step3(void) {}
+};
+class Method1 : public BaseMethod {
+private:
+    void step1(void) {}
+};
+class Method2 : public BaseMethod {
+private:
+    void step2(void) {}
+};
+class Methon3 : public BaseMethod {
+    void step3(void) {}
+};
+
+内核没有提供过可以替换某一过程中核心功能模块的机制，但可以在一些关键点上嵌入
+一些过滤器。这种工作方式只能部分体现Template Method模式的功能，但这已经可以
+满足内核设计中的相关需求。例如，Linux中的netfilter过滤机制，NT中的Upper Filter
+Driver和Lower Filter Driver(结构模式而非行为模式)以及Windows的SetWindowsHookEx。
+这些机制不仅可以工作在关键步骤上，还可以形成一条Decorator处理链。
+
+N.B. 某些工作在内核空间的工具可能会替换掉一些结构体的函数指针，形成多态子类化
+的效果，当然它们往往为了不影响正常的内核功能最后还会调用原来的函数指针。
+
+#if 0
+FIXME.
+Visitor Command Interpreter Mediator Memento
+Chain of responsibility Iterator Observer State Flyweight
+Abstract Factory
+提供一个接口来创建一系列相关或相互依赖对象而无需指定它们具体的类。
+一个层次结构,封装:许多可能的“平台”,建设一套“产品”。
+新的操作符被认为是有害的。
+class Factory {
+public:
+   virtual Product1 *CreateProduct1() = 0;
+   virtual Product2 *CreateProduct2() = 0;
+};
+Factory Method
+定义一个创建对象的接口,但是让子类来决定实例化哪个类。
+工厂方法让一个类实例化推迟到子类。
+定义一个“虚拟”的构造函数。
+新的操作符被认为是有害的。
+
+for (int i = 0; i != count; i++)
+    maker[i]->make();
+
+#endif
