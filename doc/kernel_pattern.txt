@@ -153,6 +153,31 @@ Directories, Changer Device, Tape Drives, Communications Resources, Consoles,
 Mailslots Pipes, 笔者再补充一个socket。其实就是内核中所有存在的文件系统驱动和
 设备驱动所创建的文件或设备。
 
+Factory Method
+
+Factory Method模式定义一个创建对象的接口，让子类来决定实例化哪个类，也就是将一个
+类实例化推迟到子类：
+class Factory {
+public:
+    virtual Product *make(void) = 0;
+};
+for (int i = 0; i != count; i++)
+    maker[i]->make();
+
+Abstract Factory
+
+Abstract Factory模式提供一组创建对象的接口来创建一系列相关或相互依赖对象：
+class Factory {
+public:
+   virtual Product1 *CreateProduct1() = 0;
+   virtual Product2 *CreateProduct2() = 0;
+};
+
+思考内核对象的正交性，上述两种模式便不会出现在内核中。这两种模式避免直接使用new
+操作符，因为对象销毁很简单，但创建却十分复杂，面向对象语言提供的构造函数却又十分
+简单并带有限制，这样一来工厂模式便有了用武之地。它们也可以看做是设计模式思想在
+创建对象方面的特殊应用。
+
 
 结构型
 
@@ -359,8 +384,18 @@ void *private_data;
 };
 本来为tty驱动提供的私有指针却在实现epoll机制用来，
 struct eventpoll *ep = file->private_data;
-
 私有数据不但可以用组织内部程序，还可以用于建立该对象与其它对象之间的联系。
+
+Flyweight
+
+Flyweight模式使用大量共享的细粒度对象减少对象的冗余。它本质上是一种索引，用索引
+查找的时间换得对象所占的空间。内核中的存储模块设计会体现这种模式的思想。文件对象
+并不记录文件在磁盘上位置信息，它只关心文件偏移和长度。而真正代表磁盘文件的是inode
+结构，每个索引节点对应多个同文件名的文件对象。inode会转换文件偏移转和磁盘偏移，
+这样一来，文件结构上只保留索引，而文件内容只有一份。再比如NTFS，ntfs需要提供每个
+文件的权限信息，然而它并不记录所有文件的安全信息，安全信息存在元文件$Secure中，
+大多数文件的权限信息是一致的，而少数被修改过的权限信息通过文件名作索引，引用安全
+描述符。
 
 
 行为型
@@ -465,26 +500,348 @@ Driver和Lower Filter Driver(结构模式而非行为模式)以及Windows的SetWindowsHookEx。
 N.B. 某些工作在内核空间的工具可能会替换掉一些结构体的函数指针，形成多态子类化
 的效果，当然它们往往为了不影响正常的内核功能最后还会调用原来的函数指针。
 
-#if 0
-FIXME.
-Visitor Command Interpreter Mediator Memento
-Chain of responsibility Iterator Observer State Flyweight
-Abstract Factory
-提供一个接口来创建一系列相关或相互依赖对象而无需指定它们具体的类。
-一个层次结构,封装:许多可能的“平台”,建设一套“产品”。
-新的操作符被认为是有害的。
-class Factory {
+Chain Of Responsibility
+
+Chain of responsibility模式定义了一个命令接收对象的传送链，直到有对象处理它之前，
+在它之前的每一个对象都有机会接收它。简单的说它就是面向对象的遍历列表链过程。
+C++代码如下：
+class Handler {
+    Handler *_next;
 public:
-   virtual Product1 *CreateProduct1() = 0;
-   virtual Product2 *CreateProduct2() = 0;
+    Handler *next(void) { return _next; }
+    void add(Handler *handler) { _next = handler; }
+    void append(Handler *handler) {
+        if (_next)  _next->append(handler);
+        else        _next = handler;
+    }
+    virtual void handle(void) { _next->handle(); }
 };
-Factory Method
-定义一个创建对象的接口,但是让子类来决定实例化哪个类。
-工厂方法让一个类实例化推迟到子类。
-定义一个“虚拟”的构造函数。
-新的操作符被认为是有害的。
+class Handler1 : public Handler {
+public:
+    void handle(void) {
+        if (1) Handler::handle();
+        else ;
+    }
+};
+Handler1 one, two, three;
+one.add(&two);
+one.append(&three);
+one.hande();
 
-for (int i = 0; i != count; i++)
-    maker[i]->make();
+消息处理过程就是典型应用。Windows提供了一种类似的机制，当Windows处理系统中各种
+消息时，它给应用程序参与处理这些消息提供了机会。应用程序只需用SetWindowsHookEx
+注册自己的处理程序，并在自己的处理函数中调用CallNextHookEx将传递给下一个Hook。
+Hook可以是鼠标消息、键盘消息、系统过滤消息、消息进入消息队列操作、调用窗口过程
+操作和Shell消息。Shell消息是实现桌面环境的必要基础机制，在系统语言、辅助模式、
+顶层窗口状态等发生变化时，Shell都有机会作出响应。
 
-#endif
+Observer
+
+Observer模式定义一对多对象之间的依赖，当这个对象的状态改变时，它会通知所有的相关
+对象使它们可以自动更新：
+class Subject {
+    std::list<Observer *> views;
+public:
+    void attach(Observer *observer) {
+        views.push_back(observer);
+    }
+    void notify(void) {
+        for (auto index, views)
+            index->update();
+    }
+};
+class Observer {
+    Subject *_subject;
+public:
+    Observer(Subject *subject) : _subject(subject) {
+        _subject->attach(this);
+    }
+    virtual void update(void) = 0;
+};
+
+再以窗口系统为例。Shell常常需要跟踪其它窗口的状态，并改变一些窗口的行为和响应消息
+的方式。比如它要实现管理窗口的快捷键，把用户希望看到的窗口放到最前面，或是最小化
+所有用户不想见到的窗口。Shell需要向图形系统注册全局快捷键，当用户使用这些热键时，
+Shell就会收到消息通知。Shell需要调用RegisterHotKey请求接受热键通知，并在WM_HOTKEY
+中作出合适的响应。再比如WM_MOUSEMOVE，当鼠标移进窗口时系统会向当前窗口发送
+WM_MOUSEMOVE消息，只有当窗口通过SetCapture捕获鼠标移动或调用TrackMouseEvent请求
+接收WM_MOUSEHOVER或WM_MOUSELEAVE时系统才会继续更新当前鼠标位置信息。这一经典模式
+同样体现在关机过程中，并在用户态和内核态各使用一次。窗口程序可以通过
+RegisterApplicationRestart注册WM_QUERYENDSESSION，驱动程序需要通过调用
+IoRegisterShutdownNotification注册IRP_MJ_SHUTDOWN消息。
+
+Iterator
+
+Iterator模式提供一种访问一组对象的方法。高级语言的标准库总会提供容器和其相应的
+迭代器。迭代器正是Iterator模式的典型实现。这里不再展示Iterator模式的代码，对于
+C++程序员来说，SGI STL中迭代器的时候就是非常好的范例。
+内核也会提供常用数据的容器和访问方法。在内核中最常见的还是双向循环列表结构，比如
+在Linux内核中include\linux\list.h就详尽的实现了各种列表操作，这里会涉及到C程序员
+常见的两个技巧：
+kernel.h:
+#define container_of(ptr, type, member) ({
+    const typeof(((type *)0)->member) *__mptr = (ptr);
+    (type *)((char *)__mptr - offsetof(type,member));})
+计算结构体中某个成员的偏移，当结构体首地址为0时，p->member的值就是member的偏移。
+在下面的链表遍历宏中便用到了这一技巧，第二个宏直接可以指明ListEntry作为结构体
+成员的位置，并根据此位置计算结构体的首地址：
+#define list_for_each(pos, head)
+    for (pos = (head)->next; pos != (head); pos = pos->next)
+#define list_for_each_entry_from(pos, head, member)
+    for (; &pos->member != (head);
+        pos = list_entry(pos->member.next, typeof(*pos), member))
+
+Linux内核中还存在一种hash table list，也就是开链法哈希表中的链表。
+struct hlist_node { struct hlist_node *next, **pprev; };
+prev使用了第二个技巧，它没有像next使用struct hlist_node *而是直接指向next的地址。
+next指针的类型为struct hlist_node **，pprev只在删除时使用，它直接将它前一个next
+和后一个next联系起来。删除时只需要：
+*this->pprev = this->next;
+
+NT内核中提供了相似的链表机制。此外，NT还提供了一种不常见的容器——General Table。
+这是一种用来辅助实现文件系统的查找树结构，但遍历树结构时却不是按照常见的树遍历
+方式(inorder/postorder)，它内部还用链表将元素按时间顺序串起来。查找树的实现采用
+Splay Tree，因此内核中的文件系统驱动除了FAT几乎没有使用它。高级文件系统会自己设计
+树的算法，而不会采用简单、公共的算法。
+
+Command
+
+Command模式将调用对象的方法进行组织和管理。它可以将调用方式组织成先入先出队列或
+优先队列，以实现用户操作的日志记录：
+class Receiver {
+public:
+    void method1(void);
+    void method2(void);
+};
+class Command {
+public:
+    virtual void execute(void) = 0;
+};
+template <typename Receiver>
+class ActionCommand : public Command {
+public:
+    typedef void (Receiver::*Action)(void);
+    ActionCommand(Receiver *receiver) :
+        _receiver(receiver), _action(0), _name(0) {}
+    void setAction(const char *name, Action action) {
+        _name = name;
+        _action = action;
+    }
+    const char *name(void) {
+        return _name;
+    }
+    void execute(void) {
+        if (_receiver && _action)
+            (_receiver->*_action)();
+    }
+private:
+    const char *_name;
+    Action _action;
+    Receiver *_receiver;
+};
+class Invoker {
+public:
+    virtual void invoke(void) = 0;
+};
+class QueueInvoker : public Invoker {
+public:
+    void invoke(void) {
+        for (auto index : commands)
+            index->execute();
+    }
+    void add(Command *command) {
+        commands.push_back(command);
+    }
+private:
+    std::list<Command *> commands;
+};
+Receiver *rece = new Receiver();
+Invoker *invoker = new QueueInvoker();
+invoker->add(new ActionCommand(rece, &Receiver::method1));
+invoker->add(new ActionCommand(rect, &Receiver::method2));
+invoker->invok();
+
+内核没有类似的需求，也没有和Command模式十分相似的部分。但WinSock API的设计却很
+有意思，值得一提。WinSock扩展了传统的伯克利Socket接口，比如AcceptEx和ConnectEx。
+它们都将原来单一的命令附加了数据传输操作，从这个角度看是为了提供性能。在经典的
+Socket工作流程中accept调用之后，Server会调用read，而connect调用之后，Client会调用
+write。AcceptEx正是将accept和read两次调用合在一起，而ConnectEx则将connect和write
+合在一起。
+
+Interpreter
+
+Interpreter模式描述一种文法解释器。对于这种模式笔者没有相关经验也没有找到优雅的
+解决方案，因此：
+FIXME.
+
+一般来说内核也不会提供语法分析器之类的工具。这里确实存在一处例外，NT文件系统
+运行时库提供了通配符的分析函数，用于兼容DOS文件系统中各种奇怪的文件名命名规则。
+当然在内核中分析Wildcard Character也不用Interpreter模式，它只是实现了一个很小巧的
+DFA。
+
+Mediator
+
+Mediator模式是一种十分常见的模式，它是如此常见以致程序员们忽视掉它居然也算一种
+设计模式。Mediator定义一个管理对象，该对象封装了一组同类对象行为。Mediator表示了
+这组对象的集体行为。简单的说，内核中的各种管理器就是一种Mediator。程序员在实现
+系统中的各种对象时，常常会写出相应的管理器帮助他们管理这些对象。Mediator并不是
+超市，它更像是机场或是加油站。
+
+State
+
+State模式描述了一种有限状态机的实现。它将对象的内部状态和行为分离，便于
+系统维护状态之间的关系，独立地添加新的状态。C++代码如下：
+class State {
+    int _state;
+public:
+    State(int state) : _state(state) {}
+    virtual int up(Machine *m) {}
+    virtual int mid(Machine *m) {}
+    virtual int down(Machine *m) {}
+    int state(void) { return _state; }
+};
+class State0 : public State {
+    int up(Machine *m) { return -1; }
+    int mid(Machine *m) { m->setCurrent(new State1()); }
+    int down(Machine *m) { m->setCurrent(new State2()); }
+public:
+    State0(void) : State(0) {}
+};
+class State1 : public State {
+    int up(Machine *m) { m->setCurrent(new State0()); }
+    int mid(Machine *m) { return -1; }
+    void down(Machine *m) { m->setCurrent(new State2()); }
+public:
+    State1(void) : State(1) {}
+};
+class State2 : public State {
+    int up(Machine *m) { m->setCurrent(new State0()); }
+    int mid(Machine *m) { m->setCurrent(new State1()); }
+    int down(Machine *m) { return -1; }
+public:
+    State2(void) : State(2) {}
+};
+class Machine {
+    State *current;
+public:
+    Machine(State *state) { current = state; }
+    void up(void) { current->up(this); }
+    void mid(void) { current->mid(this); }
+    void down(void) { current->down(this); }
+    setCurrent(State *state) {
+        delete current;
+        current = state;
+    }
+};
+void(Machine::*ptrs[])(void) = {
+    Machine::up, Machine::mid, Machine::down
+};
+
+Machine machine;
+(machine.*ptrs[0])();
+(machine.*ptrs[1])();
+(machine.*ptrs[2])();
+
+内核中有一处State模式的典型应用，即TCP协议状态管理。但内核没有使用State模式管理
+TCP协议状态。TCP共有11种状态：
+CLOSED, LISTEN, SYN_SENT, SYN_RCVD, ESTABLISHED,
+FIN_WAIT_1, FIN_WAIT_2, CLOSE_WAIT, LAST_ACK, CLOSING, TIME_WAIT.
+socket函数共有14个：
+socket, bind, listen, connect, accept, send, select, poll, close, shutdown,
+gethostbyname, gethostbyaddr, getsockopt, setsockopt.
+
+内核开发者只是用if, else简单的语法管理如此复杂庞杂的状态机，如果添加状态或函数，
+那么所有TCP状态相关的代码恐怕都要顺理一遍才行。除非是内核网络部分已经十分成熟，
+否则TCP状态机真应该重新设计与实现。
+
+Memento
+
+Memento模式是一种机制，提供了类似编辑器中的Undo, Redo功能。它提供了撤销或回滚之前
+对象状态的能力。下面简单说明这种日志技术：
+class Memento {
+    friend class Object;
+};
+class Object {
+public:
+    Memento *createMemento(void) { return new Memento(); }
+    void restoreMemento(Memento *m) { m = m; }
+};
+class Logger {
+    typedef void (Object::*Action)(void);
+    struct Command {
+    public:
+        Object *receiver;
+        Action action;
+    };
+    static std::list<Command *> commandList;
+    static std::list<Memento *> mementoList;
+public:
+    void do(Object *reciver, Action action) {
+        (reciver->*action)();
+        mementoList[count] = command->reciver->createMemento();
+        commandLIst[count] = new command(reviver, action);
+        count += 1;
+    }
+    void undo(void) {
+        commandList[count]->receiver->restoreMemento(mementoList[count]);
+        count -= 1;
+    }
+    void redo(void) {
+        (commandList[count]->receiver->*(commandList[count]->action))();
+        count += 1;
+    }
+};
+
+内核不会像编辑器一样提供无限次的undo/redo功能，但当内核发现错误时它会将当前进程的
+状态信息尽可能的保留下来为程序员调试提供线索。当然，如果是内核自己发生错误它也会
+尽可能的保留CPU上下文，停止系统运行。最常见的是NT系统的蓝屏，某个驱动程序在IRQL
+过高时触发了PageFault，从而引发NT的BugCheck。NT还可生成minidump文件供Windbg分析。
+
+Visitor
+
+Visitor模式提供了一种多态遍历一组对象的方法。Visitor采用双重分发的方式处理每种
+不同的Visitor和Element，导致Visitor模式过于灵活与复杂。内核不是杂货商店，它不
+需要在各种不同商品中统计它们的总价格或重量。内核中遍历各种数据的操作很常见，但
+它们常常是统一方式访问同类数据，因此对于高度结构化的内核结构来说，Visitor似乎是
+不必要的：
+class Element {
+public:
+    virtual void accept(Visitor *v) = 0;
+};
+class Element1 {
+public:
+    void accept(Visitor *v) { v.visit(this); }
+    int fetch(void) { return value; }
+};
+class Element2 {
+public:
+    void accept(Visitor *v) { v.visit(this); }
+    int get(void) { return value; }
+};
+class Element2 {
+public:
+    void accept(Visitor *v) { v.visit(this); }
+    int query(void) { return value; }
+};
+class Visitor {
+public:
+    virtual void visit(Element1 *e) = 0;
+    virtual void visit(Element2 *e) = 0;
+    virtual void visit(Element3 *e) = 0;
+};
+class PriceVisitor {
+    int count;
+public:
+    void visit(Element1 *e) {
+        count += e->fetch();
+    }
+    void visit(Element2 *e) {
+        count += e->get();
+    }
+    void visit(Element3 *e) {
+        count += e->query();
+    }
+};
+for (auto index, list) {
+    list[index]->accept(PriceVisitor);
+}
